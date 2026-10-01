@@ -1,0 +1,19 @@
+{
+  "firestore": {
+    "rules": "/app/applet/firestore.rules"
+  },
+  "emulators": {
+    "hub": {
+      "port": 58985
+    },
+    "logging": {
+      "port": 31580
+    },
+    "firestore": {
+      "port": 52352
+    },
+    "ui": {
+      "enabled": false
+    }
+  }
+}

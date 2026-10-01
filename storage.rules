@@ -1,0 +1,34 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isStaff() {
+      return isAuthenticated() && 
+             firestore.exists(/databases/(default)/documents/staff_roles/$(request.auth.uid)) &&
+             firestore.get(/databases/(default)/documents/staff_roles/$(request.auth.uid)).data.active == true;
+    }
+    
+    // Pet photos: authenticated owners and staff can upload photos up to 5MB
+    match /pet_photos/{petId}/{fileName} {
+      allow read: if true;
+      allow write: if isAuthenticated() && 
+                   request.resource.size < 5 * 1024 * 1024 &&
+                   request.resource.contentType.matches('image/.*');
+    }
+    
+    // Clinical PDFs & Lab Attachments: staff only
+    match /medical_documents/{docId}/{fileName} {
+      allow read, write: if isStaff() && request.resource.size < 15 * 1024 * 1024;
+    }
+    
+    // Clinic Branding & Logos: public read, staff write
+    match /clinic_assets/{fileName} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+  }
+}
