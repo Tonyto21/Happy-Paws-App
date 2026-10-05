@@ -5,657 +5,280 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.*
-import androidx.compose.foundation.BorderStroke
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
-import com.example.data.local.AppDatabase
-import com.example.data.repository.HappyPawsRepository
+import com.example.data.auth.AuthState
+import com.example.data.local.PetEntity
 import com.example.model.UserRole
-import com.example.ui.components.HappyPawsLogo
-import com.example.ui.components.PetOnboardingWizardDialog
+import com.example.ui.components.CameraScannerDialog
+import com.example.ui.components.PetDossierDialog
 import com.example.ui.screens.*
 import com.example.ui.theme.*
 import com.example.viewmodel.HappyPawsViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+
+sealed class StaffTab(val title: String, val icon: ImageVector) {
+    object Today : StaffTab("Today", Icons.Default.Dashboard)
+    object Clinical : StaffTab("Clinical", Icons.Default.MedicalServices)
+    object Clients : StaffTab("Clients", Icons.Default.People)
+    object Billing : StaffTab("Billing", Icons.Default.Receipt)
+    object Settings : StaffTab("Settings", Icons.Default.Settings)
+}
+
+sealed class PetOwnerTab(val title: String, val icon: ImageVector) {
+    object MyPets : PetOwnerTab("My Pets", Icons.Default.Pets)
+    object Visits : PetOwnerTab("Visits", Icons.Default.CalendarMonth)
+    object Settings : PetOwnerTab("Settings", Icons.Default.Settings)
+}
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var viewModel: HappyPawsViewModel
+    private val viewModel: HappyPawsViewModel by viewModels()
 
-    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val db = AppDatabase.getDatabase(this, lifecycleScope)
-        val repository = HappyPawsRepository(
-            clientDao = db.clientDao(),
-            petDao = db.petDao(),
-            appointmentDao = db.appointmentDao(),
-            consultationDao = db.consultationDao(),
-            preventiveDao = db.preventiveDao(),
-            inventoryBillingDao = db.inventoryBillingDao(),
-            crmDao = db.crmDao(),
-            syncOutboxDao = db.syncOutboxDao()
-        )
-
-        // Initialize Firestore Sync Engine with offline persistence
-        val syncEngine = com.example.data.sync.FirestoreSyncEngine(this, db, lifecycleScope)
-        syncEngine.startRealtimeSync()
-        lifecycleScope.launch(Dispatchers.IO) {
-            syncEngine.drainOutbox()
-        }
-
-        // Initialize Production Auth Repository
-        val authRepository = com.example.data.auth.AuthRepository(this, db, lifecycleScope)
-
-        // Seed data if empty
-        lifecycleScope.launch(Dispatchers.IO) {
-            val count = db.clientDao().getClientCount()
-            if (count == 0) {
-                AppDatabase.populateSeedData(db)
-            }
-        }
-
-        viewModel = HappyPawsViewModel(repository, authRepository)
-
         setContent {
             HappyPawsTheme {
-                val authState by viewModel.authState.collectAsStateWithLifecycle()
-                val state by viewModel.uiState.collectAsStateWithLifecycle()
-                var currentStaffTab by rememberSaveable { mutableIntStateOf(0) }
-                var currentOwnerTab by rememberSaveable { mutableIntStateOf(0) }
-                var showOnboardingWizard by rememberSaveable { mutableStateOf(false) }
-                var showAccountDialog by rememberSaveable { mutableStateOf(false) }
+                val authState by viewModel.authState.collectAsState()
 
-                when (val currAuth = authState) {
-                    is com.example.data.auth.AuthState.Initializing -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(WarmIvory),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                HappyPawsLogo(size = 96.dp, showTagline = true)
-                                Spacer(modifier = Modifier.height(24.dp))
-                                CircularProgressIndicator(color = AmberTerracotta)
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "Restoring session...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MediumCharcoal
-                                )
-                            }
-                        }
-                    }
-
-                    is com.example.data.auth.AuthState.Unauthenticated, is com.example.data.auth.AuthState.AuthError -> {
-                        var authErrorMsg by remember { mutableStateOf<String?>(null) }
-                        var isAuthLoading by remember { mutableStateOf(false) }
-
+                when (val state = authState) {
+                    is AuthState.Unauthenticated -> {
                         AuthScreen(
-                            onSignIn = { email, pass ->
-                                isAuthLoading = true
-                                authErrorMsg = null
-                                viewModel.signIn(email, pass) { success, err ->
-                                    isAuthLoading = false
-                                    if (!success) authErrorMsg = err
-                                }
-                            },
-                            onRegisterPetOwner = { email, pass, name, phone ->
-                                isAuthLoading = true
-                                authErrorMsg = null
-                                viewModel.registerPetOwner(email, pass, name, phone) { success, err ->
-                                    isAuthLoading = false
-                                    if (!success) authErrorMsg = err
-                                }
-                            },
-                            onActivateStaffInvite = { email, pass, token, name ->
-                                isAuthLoading = true
-                                authErrorMsg = null
-                                viewModel.activateStaffInvitation(email, pass, token, name) { success, err ->
-                                    isAuthLoading = false
-                                    if (!success) authErrorMsg = err
-                                }
-                            },
-                            onForgotPassword = { email ->
-                                viewModel.forgotPassword(email) { _, err ->
-                                    if (err != null) authErrorMsg = err
-                                }
-                            },
-                            onLinkClinicRecord = { phoneOrEmail, claimCode ->
-                                isAuthLoading = true
-                                authErrorMsg = null
-                                viewModel.linkClinicRecord(phoneOrEmail, claimCode) { success, err ->
-                                    isAuthLoading = false
-                                    if (!success) authErrorMsg = err
-                                }
-                            },
-                            onDevSwitchRole = { role ->
-                                viewModel.devSwitchRole(role)
-                            },
-                            errorMessage = authErrorMsg,
-                            isLoading = isAuthLoading
+                            authRepo = viewModel.authRepo,
+                            onLoginSuccess = { /* Automatically handled via authState */ }
                         )
                     }
-
-                    is com.example.data.auth.AuthState.AuthenticatedUnverified -> {
-                        EmailVerificationScreen(
-                            email = currAuth.email,
-                            onResendVerification = { viewModel.sendVerificationEmail() },
-                            onCheckVerificationStatus = {
-                                viewModel.checkEmailVerification { isVerified ->
-                                    if (!isVerified) {
-                                        Toast.makeText(this@MainActivity, "Email not yet verified. Please click the link in your email.", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            },
-                            onSignOut = { viewModel.signOut() }
+                    is AuthState.Authenticated -> {
+                        MainAppScaffold(
+                            viewModel = viewModel,
+                            currentUser = state
                         )
-                    }
-
-                    is com.example.data.auth.AuthState.AuthenticatedProfileIncomplete -> {
-                        var profileErrorMsg by remember { mutableStateOf<String?>(null) }
-                        var isProfileLoading by remember { mutableStateOf(false) }
-
-                        CompleteProfileScreen(
-                            userEmail = currAuth.email,
-                            userName = currAuth.displayName,
-                            onLinkClinicRecord = { phoneOrEmail, claimCode ->
-                                isProfileLoading = true
-                                profileErrorMsg = null
-                                viewModel.linkClinicRecord(phoneOrEmail, claimCode) { success, err ->
-                                    isProfileLoading = false
-                                    if (!success) profileErrorMsg = err
-                                }
-                            },
-                            onSaveNewPet = { pet, phone ->
-                                isProfileLoading = true
-                                profileErrorMsg = null
-                                viewModel.completeNewPetOwnerOnboarding(pet, phone) { success, err ->
-                                    isProfileLoading = false
-                                    if (!success) profileErrorMsg = err
-                                }
-                            },
-                            onSignOut = { viewModel.signOut() },
-                            errorMessage = profileErrorMsg,
-                            isLoading = isProfileLoading
-                        )
-                    }
-
-                    is com.example.data.auth.AuthState.AuthenticatedPetOwner, is com.example.data.auth.AuthState.AuthenticatedStaff -> {
-                        // Determine active client for Pet Owner experience
-                        val activeOwner = if (currAuth is com.example.data.auth.AuthState.AuthenticatedPetOwner) {
-                            currAuth.client
-                        } else {
-                            state.clients.firstOrNull() ?: com.example.data.local.ClientEntity(
-                                id = 1,
-                                fullName = "Anthony Tolbert",
-                                preferredName = "Anthony",
-                                phone = "0881479329"
-                            )
-                        }
-
-                        val activeUserName = when (currAuth) {
-                            is com.example.data.auth.AuthState.AuthenticatedStaff -> currAuth.displayName
-                            is com.example.data.auth.AuthState.AuthenticatedPetOwner -> currAuth.displayName
-                            else -> "User"
-                        }
-                        val activeUserEmail = when (currAuth) {
-                            is com.example.data.auth.AuthState.AuthenticatedStaff -> currAuth.email
-                            is com.example.data.auth.AuthState.AuthenticatedPetOwner -> currAuth.email
-                            else -> ""
-                        }
-
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    topBar = {
-                        TopAppBar(
-                            title = {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    HappyPawsLogo(size = 36.dp, showTagline = false)
-                                    Column {
-                                        Text(
-                                            text = state.settings?.clinicName ?: "Happy Paws Liberia",
-                                            style = MaterialTheme.typography.titleMedium.copy(
-                                                fontFamily = FontFamily.Serif,
-                                                fontWeight = FontWeight.Bold
-                                            ),
-                                            color = DeepCharcoal
-                                        )
-                                        Text(
-                                            text = state.settings?.subTitle ?: "Rescue Center & Vet Clinic",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                            color = AmberTerracotta
-                                        )
-                                    }
-                                }
-                            },
-                            actions = {
-                                // Role switcher indicator pill
-                                Surface(
-                                    onClick = {
-                                        if (state.currentRole == UserRole.PET_OWNER) {
-                                            viewModel.switchRole(UserRole.VETERINARIAN)
-                                        } else {
-                                            viewModel.switchRole(UserRole.PET_OWNER)
-                                        }
-                                    },
-                                    color = if (state.currentRole == UserRole.PET_OWNER) SoftCream else SoftSage,
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = BorderStroke(1.dp, if (state.currentRole == UserRole.PET_OWNER) AmberTerracotta.copy(alpha = 0.5f) else ForestSage.copy(alpha = 0.5f)),
-                                    modifier = Modifier.defaultMinSize(minHeight = 44.dp).testTag("quick_role_toggle")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (state.currentRole == UserRole.PET_OWNER) Icons.Default.Pets else Icons.Default.MedicalServices,
-                                            contentDescription = null,
-                                            tint = if (state.currentRole == UserRole.PET_OWNER) AmberTerracotta else ForestSage,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Text(
-                                            text = state.currentRole.displayName,
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = if (state.currentRole == UserRole.PET_OWNER) AmberTerracotta else ForestSage
-                                        )
-                                    }
-                                }
-
-                                // Account / Auth Button
-                                IconButton(
-                                    onClick = { showAccountDialog = true },
-                                    modifier = Modifier.testTag("auth_account_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.AccountCircle,
-                                        contentDescription = "User Account",
-                                        tint = DeepCharcoal
-                                    )
-                                }
-
-                                // Notifications Icon with badge
-                                IconButton(
-                                    onClick = {
-                                        if (state.currentRole == UserRole.PET_OWNER) {
-                                            currentOwnerTab = 2 // Settings/Notifications
-                                        } else {
-                                            currentStaffTab = 4 // Settings
-                                        }
-                                    },
-                                    modifier = Modifier.testTag("notifications_icon")
-                                ) {
-                                    BadgedBox(
-                                        badge = {
-                                            if (state.unreadNotifCount > 0) {
-                                                Badge(containerColor = StatusRed) {
-                                                    Text("${state.unreadNotifCount}")
-                                                }
-                                            }
-                                        }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Notifications,
-                                            contentDescription = "Notifications",
-                                            tint = DeepCharcoal
-                                        )
-                                    }
-                                }
-                            },
-                            colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = WarmIvory
-                            )
-                        )
-                    },
-                    bottomBar = {
-                        NavigationBar(
-                            containerColor = WarmIvory,
-                            contentColor = DeepCharcoal,
-                            tonalElevation = 8.dp,
-                            windowInsets = WindowInsets.navigationBars
-                        ) {
-                            if (state.currentRole == UserRole.PET_OWNER) {
-                                NavigationBarItem(
-                                    icon = { Icon(Icons.Default.Pets, contentDescription = "My Pets") },
-                                    label = { Text("My Pets") },
-                                    selected = currentOwnerTab == 0,
-                                    onClick = { currentOwnerTab = 0 },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AmberTerracotta,
-                                        indicatorColor = SoftCream
-                                    ),
-                                    modifier = Modifier.testTag("nav_owner_pets")
-                                )
-                                NavigationBarItem(
-                                    icon = { Icon(Icons.Default.CalendarMonth, contentDescription = "Appointments") },
-                                    label = { Text("Visits") },
-                                    selected = currentOwnerTab == 1,
-                                    onClick = { currentOwnerTab = 1 },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AmberTerracotta,
-                                        indicatorColor = SoftCream
-                                    ),
-                                    modifier = Modifier.testTag("nav_owner_visits")
-                                )
-                                NavigationBarItem(
-                                    icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                                    label = { Text("Settings") },
-                                    selected = currentOwnerTab == 2,
-                                    onClick = { currentOwnerTab = 2 },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AmberTerracotta,
-                                        indicatorColor = SoftCream
-                                    ),
-                                    modifier = Modifier.testTag("nav_owner_settings")
-                                )
-                            } else {
-                                // Staff Navigation
-                                NavigationBarItem(
-                                    icon = { Icon(Icons.Default.Dashboard, contentDescription = "Today") },
-                                    label = { Text("Today") },
-                                    selected = currentStaffTab == 0,
-                                    onClick = { currentStaffTab = 0 },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AmberTerracotta,
-                                        indicatorColor = SoftCream
-                                    ),
-                                    modifier = Modifier.testTag("nav_staff_today")
-                                )
-                                NavigationBarItem(
-                                    icon = { Icon(Icons.Default.MedicalServices, contentDescription = "Clinical") },
-                                    label = { Text("Clinical") },
-                                    selected = currentStaffTab == 1,
-                                    onClick = { currentStaffTab = 1 },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AmberTerracotta,
-                                        indicatorColor = SoftCream
-                                    ),
-                                    modifier = Modifier.testTag("nav_staff_clinical")
-                                )
-                                NavigationBarItem(
-                                    icon = { Icon(Icons.Default.People, contentDescription = "Clients") },
-                                    label = { Text("Clients") },
-                                    selected = currentStaffTab == 2,
-                                    onClick = { currentStaffTab = 2 },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AmberTerracotta,
-                                        indicatorColor = SoftCream
-                                    ),
-                                    modifier = Modifier.testTag("nav_staff_clients")
-                                )
-                                NavigationBarItem(
-                                    icon = { Icon(Icons.Default.Inventory2, contentDescription = "Billing") },
-                                    label = { Text("Billing") },
-                                    selected = currentStaffTab == 3,
-                                    onClick = { currentStaffTab = 3 },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AmberTerracotta,
-                                        indicatorColor = SoftCream
-                                    ),
-                                    modifier = Modifier.testTag("nav_staff_billing")
-                                )
-                                NavigationBarItem(
-                                    icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                                    label = { Text("Settings") },
-                                    selected = currentStaffTab == 4,
-                                    onClick = { currentStaffTab = 4 },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AmberTerracotta,
-                                        indicatorColor = SoftCream
-                                    ),
-                                    modifier = Modifier.testTag("nav_staff_settings")
-                                )
-                            }
-                        }
-                    }
-                ) { innerPadding ->
-                    Box(modifier = Modifier.padding(innerPadding)) {
-                        if (state.currentRole == UserRole.PET_OWNER) {
-                            when (currentOwnerTab) {
-                                0, 1 -> {
-                                    PetOwnerDashboardScreen(
-                                        currentOwner = activeOwner,
-                                        pets = state.pets,
-                                        appointments = state.appointments,
-                                        vaccines = state.vaccinations,
-                                        dewormings = state.dewormings,
-                                        prescriptions = state.prescriptions,
-                                        consultations = state.consultations,
-                                        weights = state.weights,
-                                        clinicSettings = state.settings,
-                                        onAddPetClick = { showOnboardingWizard = true },
-                                        onRequestAppointment = { petId, reason, isEmergency ->
-                                            viewModel.requestAppointment(petId, reason, isEmergency)
-                                        },
-                                        onLogWeight = { petId, weightKg ->
-                                            viewModel.recordWeight(
-                                                com.example.data.local.WeightRecordEntity(
-                                                    petId = petId,
-                                                    weightKg = weightKg,
-                                                    recordedDate = "2026-09-28"
-                                                )
-                                            )
-                                        }
-                                    )
-                                }
-                                2 -> {
-                                    SettingsScreen(
-                                        currentRole = state.currentRole,
-                                        settings = state.settings,
-                                        auditLogs = state.auditLogs,
-                                        notifications = state.notifications,
-                                        onRoleSelected = { viewModel.switchRole(it) },
-                                        onSaveSettings = { viewModel.saveClinicSettings(it) },
-                                        onMarkAllNotificationsRead = { viewModel.markAllNotificationsRead() }
-                                    )
-                                }
-                            }
-                        } else {
-                            // Staff Views
-                            when (currentStaffTab) {
-                                0 -> {
-                                    StaffTodayScreen(
-                                        currentRole = state.currentRole,
-                                        appointments = state.appointments,
-                                        pets = state.pets,
-                                        clients = state.clients,
-                                        lowStockItems = state.lowStockInventory,
-                                        notifications = state.notifications,
-                                        vaccinations = state.vaccinations,
-                                        dewormings = state.dewormings,
-                                        consultations = state.consultations,
-                                        onUpdateAppointmentStatus = { id, status ->
-                                            viewModel.updateAppointmentStatus(id, status)
-                                        },
-                                        onStartConsultation = { petId, _ ->
-                                            viewModel.selectPetForClinical(petId)
-                                            currentStaffTab = 1
-                                        },
-                                        onQuickCheckIn = {
-                                            currentStaffTab = 2
-                                        },
-                                        onRegisterNewClient = {
-                                            currentStaffTab = 2
-                                        },
-                                        onRecordPayment = {
-                                            currentStaffTab = 3
-                                        },
-                                        onCheckInPetToday = { petId, clientId ->
-                                            viewModel.checkInPetToday(petId, clientId)
-                                        }
-                                    )
-                                }
-                                1 -> {
-                                    StaffClinicalScreen(
-                                        pets = state.pets,
-                                        clients = state.clients,
-                                        consultations = state.consultations,
-                                        vaccines = state.vaccinations,
-                                        dewormings = state.dewormings,
-                                        parasiteRecords = state.parasiteRecords,
-                                        prescriptions = state.prescriptions,
-                                        weights = state.weights,
-                                        clinicSettings = state.settings,
-                                        preSelectedPetId = state.selectedPetForClinicalId,
-                                        onSaveConsultation = { viewModel.saveConsultation(it) },
-                                        onFinalizeConsultation = {},
-                                        onAddVaccination = { viewModel.recordVaccination(it) },
-                                        onAddDeworming = { viewModel.recordDeworming(it) },
-                                        onAddParasiteRecord = { viewModel.recordParasite(it) },
-                                        onAddPrescription = { viewModel.recordPrescription(it) },
-                                        onAddWeight = { viewModel.recordWeight(it) }
-                                    )
-                                }
-                                2 -> {
-                                    StaffClientsPetsScreen(
-                                        clients = state.clients,
-                                        pets = state.pets,
-                                        onAddClientAndPet = { client, pet ->
-                                            viewModel.addClientAndPet(client, pet)
-                                        },
-                                        onSelectPetForClinical = { petId ->
-                                            viewModel.selectPetForClinical(petId)
-                                            currentStaffTab = 1
-                                        }
-                                    )
-                                }
-                                3 -> {
-                                    StaffBillingInventoryScreen(
-                                        inventory = state.inventory,
-                                        invoices = state.invoices,
-                                        payments = state.payments,
-                                        clients = state.clients,
-                                        pets = state.pets,
-                                        clinicSettings = state.settings,
-                                        onAdjustStock = { id, delta ->
-                                            viewModel.adjustStock(id, delta)
-                                        },
-                                        onAddInventoryItem = { viewModel.addInventoryItem(it) },
-                                        onCreateInvoice = { viewModel.createInvoice(it) },
-                                        onRecordPayment = { viewModel.recordPayment(it) }
-                                    )
-                                }
-                                4 -> {
-                                    SettingsScreen(
-                                        currentRole = state.currentRole,
-                                        settings = state.settings,
-                                        auditLogs = state.auditLogs,
-                                        notifications = state.notifications,
-                                        onRoleSelected = { viewModel.switchRole(it) },
-                                        onSaveSettings = { viewModel.saveClinicSettings(it) },
-                                        onMarkAllNotificationsRead = { viewModel.markAllNotificationsRead() }
-                                    )
-                                }
-                            }
-                        }
-
-                        // Onboarding Wizard Modal Dialog
-                        if (showOnboardingWizard) {
-                            PetOnboardingWizardDialog(
-                                ownerId = activeOwner.id,
-                                ownerName = activeOwner.preferredName.ifEmpty { activeOwner.fullName },
-                                onSavePet = { newPet, _ ->
-                                    viewModel.addPetFromOnboarding(newPet)
-                                },
-                                onDismiss = { showOnboardingWizard = false }
-                            )
-                        }
-
-                        // Account Details & Sign Out Modal Dialog
-                        if (showAccountDialog) {
-                            AlertDialog(
-                                onDismissRequest = { showAccountDialog = false },
-                                icon = {
-                                    Icon(
-                                        Icons.Default.AccountCircle,
-                                        contentDescription = null,
-                                        tint = AmberTerracotta,
-                                        modifier = Modifier.size(36.dp)
-                                    )
-                                },
-                                title = {
-                                    Text(
-                                        text = activeUserName,
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                                    )
-                                },
-                                text = {
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        if (activeUserEmail.isNotBlank()) {
-                                            Text(
-                                                text = activeUserEmail,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MediumCharcoal
-                                            )
-                                        }
-                                        Text(
-                                            text = "Active Role: ${state.currentRole.displayName}",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                            color = AmberTerracotta
-                                        )
-                                        if (currAuth is com.example.data.auth.AuthState.AuthenticatedPetOwner) {
-                                            Text(
-                                                text = "Clinic File ID: #${currAuth.client.id}",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = SoftSlate
-                                            )
-                                        }
-                                    }
-                                },
-                                confirmButton = {
-                                    Button(
-                                        onClick = {
-                                            showAccountDialog = false
-                                            viewModel.signOut()
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = StatusRed),
-                                        modifier = Modifier.testTag("account_sign_out_button")
-                                    ) {
-                                        Text("Sign Out")
-                                    }
-                                },
-                                dismissButton = {
-                                    TextButton(onClick = { showAccountDialog = false }) {
-                                        Text("Close")
-                                    }
-                                }
-                            )
-                        }
                     }
                 }
-            } // End of when (val currAuth = authState)
+            }
         }
     }
 }
-}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MainAppScaffold(
+    viewModel: HappyPawsViewModel,
+    currentUser: AuthState.Authenticated
+) {
+    val role = currentUser.role
+    val pets by viewModel.allPets.collectAsState()
+    val ownerPet = pets.firstOrNull { it.id == 1L } ?: pets.firstOrNull() ?: com.example.data.local.PetEntity(
+        id = 1,
+        ownerClientId = 1,
+        name = "Bella",
+        species = "Canine (Dog)",
+        breed = "African Boerboel Mix",
+        sex = "Spayed Female",
+        dob = "12 Jan 2021",
+        weightKg = 24.5,
+        color = "Brindle",
+        microchipId = "985141002931882",
+        rabiesTag = "HP-LR-2024-0884"
+    )
+
+    var currentStaffTab by remember { mutableStateOf<StaffTab>(StaffTab.Today) }
+    var currentPetOwnerTab by remember { mutableStateOf<PetOwnerTab>(PetOwnerTab.MyPets) }
+    var showGlobalScanner by remember { mutableStateOf(false) }
+    var scannedPetForDossier by remember { mutableStateOf<PetEntity?>(null) }
+    val context = LocalContext.current
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Happy Paws",
+                            fontWeight = FontWeight.Bold,
+                            color = DeepCharcoal,
+                            fontSize = 18.sp
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (role == UserRole.SUPER_ADMIN) TerracottaLight else SageLight,
+                            modifier = Modifier.padding(start = 4.dp)
+                        ) {
+                            Text(
+                                text = role.displayName,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (role == UserRole.SUPER_ADMIN) AmberTerracottaDark else ForestSage,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showGlobalScanner = true }) {
+                        Icon(
+                            Icons.Default.QrCodeScanner,
+                            contentDescription = "Scan Tag / QR",
+                            tint = AmberTerracotta
+                        )
+                    }
+                    IconButton(onClick = { viewModel.signOut() }) {
+                        Icon(
+                            Icons.Default.Logout,
+                            contentDescription = "Sign Out",
+                            tint = DeepCharcoal
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.White
+                )
+            )
+        },
+        bottomBar = {
+            // Enhanced Bottom Navigation Bar with dark visible inactive text/icons
+            NavigationBar(
+                containerColor = Color.White,
+                contentColor = DeepCharcoal,
+                tonalElevation = 6.dp,
+                windowInsets = WindowInsets.navigationBars
+            ) {
+                if (role == UserRole.PET_OWNER) {
+                    val tabs = listOf(PetOwnerTab.MyPets, PetOwnerTab.Visits, PetOwnerTab.Settings)
+                    tabs.forEach { tab ->
+                        val selected = currentPetOwnerTab == tab
+                        NavigationBarItem(
+                            selected = selected,
+                            onClick = { currentPetOwnerTab = tab },
+                            icon = {
+                                Icon(
+                                    tab.icon,
+                                    contentDescription = tab.title,
+                                    tint = if (selected) AmberTerracotta else DeepCharcoal
+                                )
+                            },
+                            label = {
+                                Text(
+                                    text = tab.title,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (selected) AmberTerracotta else DeepCharcoal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = AmberTerracotta,
+                                unselectedIconColor = DeepCharcoal,
+                                selectedTextColor = AmberTerracotta,
+                                unselectedTextColor = DeepCharcoal,
+                                indicatorColor = TerracottaLight
+                            )
+                        )
+                    }
+                } else {
+                    // Exact 5 Staff Sections: Today | Clinical | Clients | Billing | Settings
+                    val tabs = listOf(StaffTab.Today, StaffTab.Clinical, StaffTab.Clients, StaffTab.Billing, StaffTab.Settings)
+                    tabs.forEach { tab ->
+                        val selected = currentStaffTab == tab
+                        NavigationBarItem(
+                            selected = selected,
+                            onClick = { currentStaffTab = tab },
+                            icon = {
+                                Icon(
+                                    tab.icon,
+                                    contentDescription = tab.title,
+                                    tint = if (selected) AmberTerracotta else DeepCharcoal,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            label = {
+                                Text(
+                                    text = tab.title,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (selected) AmberTerracotta else DeepCharcoal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = AmberTerracotta,
+                                unselectedIconColor = DeepCharcoal,
+                                selectedTextColor = AmberTerracotta,
+                                unselectedTextColor = DeepCharcoal,
+                                indicatorColor = TerracottaLight
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            if (role == UserRole.PET_OWNER) {
+                when (currentPetOwnerTab) {
+                    is PetOwnerTab.MyPets -> PetOwnerDashboardScreen(viewModel = viewModel, ownerPet = ownerPet, currentRole = role)
+                    is PetOwnerTab.Visits -> PetOwnerDashboardScreen(viewModel = viewModel, ownerPet = ownerPet, currentRole = role)
+                    is PetOwnerTab.Settings -> SettingsScreen(viewModel = viewModel, currentRole = role, onSignOut = { viewModel.signOut() })
+                }
+            } else {
+                when (currentStaffTab) {
+                    is StaffTab.Today -> StaffTodayScreen(viewModel = viewModel, currentRole = role)
+                    is StaffTab.Clinical -> StaffClinicalScreen(viewModel = viewModel)
+                    is StaffTab.Clients -> StaffClientsPetsScreen(viewModel = viewModel)
+                    is StaffTab.Billing -> StaffBillingInventoryScreen(viewModel = viewModel)
+                    is StaffTab.Settings -> SettingsScreen(viewModel = viewModel, currentRole = role, onSignOut = { viewModel.signOut() })
+                }
+            }
+        }
+    }
+
+    if (showGlobalScanner) {
+        CameraScannerDialog(
+            pets = pets,
+            currentRole = role,
+            onDismiss = { showGlobalScanner = false },
+            onPetVerified = { pet ->
+                showGlobalScanner = false
+                scannedPetForDossier = pet
+            }
+        )
+    }
+
+    scannedPetForDossier?.let { pet ->
+        PetDossierDialog(
+            pet = pet,
+            currentRole = role,
+            onAdmitToQueue = {
+                viewModel.checkInPetToday(pet.id, "Owner of ${pet.name}", pet.name, pet.species)
+                scannedPetForDossier = null
+                Toast.makeText(context, "${pet.name} admitted to Today's Clinic Queue.", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { scannedPetForDossier = null }
+        )
+    }
 }

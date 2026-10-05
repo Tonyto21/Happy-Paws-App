@@ -1,15 +1,10 @@
 package com.example.ui.screens
 
 import android.widget.Toast
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -17,394 +12,294 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.local.*
+import com.example.data.local.AppointmentEntity
+import com.example.data.local.PetEntity
+import com.example.model.AppointmentStatus
 import com.example.model.UserRole
-import com.example.ui.components.*
+import com.example.ui.components.CameraScannerDialog
+import com.example.ui.components.PetDossierDialog
+import com.example.ui.components.StatusBadge
 import com.example.ui.theme.*
+import com.example.viewmodel.HappyPawsViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StaffTodayScreen(
-    currentRole: UserRole,
-    appointments: List<AppointmentEntity>,
-    pets: List<PetEntity>,
-    clients: List<ClientEntity>,
-    lowStockItems: List<InventoryEntity>,
-    notifications: List<NotificationEntity>,
-    vaccinations: List<VaccinationEntity> = emptyList(),
-    dewormings: List<DewormingEntity> = emptyList(),
-    consultations: List<ConsultationEntity> = emptyList(),
-    onUpdateAppointmentStatus: (id: Long, newStatus: String) -> Unit,
-    onStartConsultation: (petId: Long, appointmentId: Long) -> Unit,
-    onQuickCheckIn: () -> Unit,
-    onRegisterNewClient: () -> Unit,
-    onRecordPayment: () -> Unit,
-    onCheckInPetToday: ((Long, Long) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    viewModel: HappyPawsViewModel,
+    currentRole: UserRole
 ) {
     val context = LocalContext.current
-    var selectedFilter by remember { mutableStateOf("All") }
-    val filters = listOf("All", "Checked In", "In Progress", "Confirmed", "Emergencies")
+    val appointments by viewModel.allAppointments.collectAsState()
+    val pets by viewModel.allPets.collectAsState()
 
-    var showScanQrDialog by remember { mutableStateOf(false) }
-    var showDossierDialog by remember { mutableStateOf(false) }
-    var scannedPet by remember { mutableStateOf<PetEntity?>(null) }
+    var showScanner by remember { mutableStateOf(false) }
+    var showWalkInDialog by remember { mutableStateOf(false) }
+    var selectedDossierPet by remember { mutableStateOf<PetEntity?>(null) }
 
-    val filteredAppointments = appointments.filter { appt ->
-        when (selectedFilter) {
-            "Checked In" -> appt.status.equals("Checked In", ignoreCase = true)
-            "In Progress" -> appt.status.equals("In Progress", ignoreCase = true)
-            "Confirmed" -> appt.status.equals("Confirmed", ignoreCase = true)
-            "Emergencies" -> appt.isHomeEmergency || appt.appointmentType.equals("Emergency", ignoreCase = true)
-            else -> true
-        }
-    }
+    // Walk-in form state
+    var walkInPetName by remember { mutableStateOf("") }
+    var walkInOwnerName by remember { mutableStateOf("") }
+    var walkInReason by remember { mutableStateOf("") }
+    var walkInVet by remember { mutableStateOf("Dr. David Kpadeh") }
 
-    val waitingCount = appointments.count { it.status.equals("Checked In", ignoreCase = true) }
-    val inProgressCount = appointments.count { it.status.equals("In Progress", ignoreCase = true) }
-
-    LazyColumn(
-        modifier = modifier
+    Column(
+        modifier = Modifier
             .fillMaxSize()
             .background(WarmIvory)
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
+            .padding(16.dp)
     ) {
-        // 1. Staff Header
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            text = "Today's Clinical Floor",
-                            style = MaterialTheme.typography.headlineMedium.copy(
-                                fontFamily = FontFamily.Serif,
-                                fontWeight = FontWeight.Bold
-                            ),
-                            color = DeepCharcoal
-                        )
-                    }
-                    Text(
-                        text = "Role: ${currentRole.displayName} • Happy Paws Liberia Clinic",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AmberTerracotta
-                    )
-                }
-                HappyPawsLogo(size = 44.dp, showTagline = false)
-            }
-        }
-
-        // 2. Offline sync indicator
-        item {
-            OfflineSyncBanner(
-                lastSyncTime = "Continuous Offline Room Sync",
-                onManualSync = {
-                    Toast.makeText(context, "Local clinic database up to date", Toast.LENGTH_SHORT).show()
-                }
-            )
-        }
-
-        // 3. Operational Stat Cards
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                MetricStatCard(
-                    title = "Waiting Queue",
-                    value = "$waitingCount",
-                    subtitle = "Checked in patients",
-                    icon = Icons.Default.AccessTime,
-                    iconTint = StatusGreen,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricStatCard(
-                    title = "In Exam",
-                    value = "$inProgressCount",
-                    subtitle = "With Veterinarian",
-                    icon = Icons.Default.MedicalServices,
-                    iconTint = AmberTerracotta,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricStatCard(
-                    title = "Low Stock",
-                    value = "${lowStockItems.size}",
-                    subtitle = "Items need reorder",
-                    icon = Icons.Default.Inventory2,
-                    iconTint = if (lowStockItems.isNotEmpty()) StatusRed else StatusGreen,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-
-        // 4. Critical Alerts (Low Stock / Emergencies)
-        if (lowStockItems.isNotEmpty()) {
-            item {
-                Surface(
-                    color = StatusRedBg,
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, StatusRed.copy(alpha = 0.3f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Icon(Icons.Default.Warning, contentDescription = null, tint = StatusRed)
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Critical Inventory Alert",
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = StatusRed
-                            )
-                            Text(
-                                text = "${lowStockItems.first().name} has only ${lowStockItems.first().quantity} ${lowStockItems.first().unit} remaining!",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = DeepCharcoal
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // 5. Quick Actions Bar
-        item {
-            Text(
-                text = "Rapid Actions",
-                style = MaterialTheme.typography.titleSmall.copy(
-                    fontFamily = FontFamily.Serif,
-                    fontWeight = FontWeight.Bold
-                ),
-                color = DeepCharcoal
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                item {
-                    QuickActionButton(
-                        title = "Scan Pet QR",
-                        icon = Icons.Default.QrCodeScanner,
-                        containerColor = AmberTerracotta,
-                        onClick = { showScanQrDialog = true }
-                    )
-                }
-                item {
-                    QuickActionButton(
-                        title = "New Consultation",
-                        icon = Icons.Default.Healing,
-                        containerColor = ForestSage,
-                        onClick = {
-                            val firstWaiting = appointments.find { it.status.equals("Checked In", true) }
-                            if (firstWaiting != null) {
-                                onStartConsultation(firstWaiting.petId, firstWaiting.id)
-                            } else {
-                                onQuickCheckIn()
-                            }
-                        }
-                    )
-                }
-                item {
-                    QuickActionButton(
-                        title = "New Client / Pet",
-                        icon = Icons.Default.PersonAdd,
-                        containerColor = AmberTerracotta,
-                        onClick = onRegisterNewClient
-                    )
-                }
-                item {
-                    QuickActionButton(
-                        title = "Record Payment",
-                        icon = Icons.Default.ReceiptLong,
-                        containerColor = DeepNavy,
-                        onClick = onRecordPayment
-                    )
-                }
-            }
-        }
-
-        // 6. Appointments Timeline & Patient Flow
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
                 Text(
-                    text = "Today's Patient Schedule (${filteredAppointments.size})",
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontFamily = FontFamily.Serif,
-                        fontWeight = FontWeight.Bold
-                    ),
+                    text = "Today's Patient Triage",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
                     color = DeepCharcoal
                 )
+                Text(
+                    text = "Reception check-in & clinical appointments",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MediumCharcoal
+                )
             }
 
-            // Filter Chips
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(vertical = 6.dp)
-            ) {
-                items(filters) { f ->
-                    val isSel = selectedFilter == f
-                    FilterChip(
-                        selected = isSel,
-                        onClick = { selectedFilter = f },
-                        label = { Text(f) },
-                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
-                    )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Walk-in Check-in
+                OutlinedButton(
+                    onClick = { showWalkInDialog = true },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp), tint = DeepCharcoal)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Walk-in", fontSize = 12.sp, color = DeepCharcoal, fontWeight = FontWeight.Bold)
+                }
+
+                // Scan Pet QR
+                Button(
+                    onClick = { showScanner = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestSage),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Scan QR", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
 
-        // Appointment Cards with Instant Status Workflow
-        items(filteredAppointments) { appt ->
-            val pet = pets.find { it.id == appt.petId }
-            val client = clients.find { it.id == appt.clientId }
+        Spacer(modifier = Modifier.height(14.dp))
 
+        // Summary Statistics Row
+        val inConsultationCount = appointments.count { it.status == AppointmentStatus.IN_CONSULTATION }
+        val confirmedCount = appointments.count { it.status == AppointmentStatus.CONFIRMED || it.status == AppointmentStatus.REQUESTED }
+        val completedCount = appointments.count { it.status == AppointmentStatus.COMPLETED }
+        val totalCount = appointments.size
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Surface(
-                color = CardWarmSurface,
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, BorderSubtle),
-                modifier = Modifier.fillMaxWidth()
+                shape = RoundedCornerShape(12.dp),
+                color = Color.White,
+                modifier = Modifier.weight(1f)
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("$totalCount", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DeepCharcoal)
+                    Text("Total", fontSize = 11.sp, color = MediumCharcoal, fontWeight = FontWeight.Medium)
+                }
+            }
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = TerracottaLight,
+                modifier = Modifier.weight(1f)
+            ) {
+                Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("$inConsultationCount", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AmberTerracottaDark)
+                    Text("In Consult", fontSize = 11.sp, color = AmberTerracottaDark, fontWeight = FontWeight.Bold)
+                }
+            }
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = SageLight,
+                modifier = Modifier.weight(1f)
+            ) {
+                Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("$confirmedCount", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = ForestSage)
+                    Text("Queue", fontSize = 11.sp, color = ForestSage, fontWeight = FontWeight.Bold)
+                }
+            }
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFFF3F4F6),
+                modifier = Modifier.weight(1f)
+            ) {
+                Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("$completedCount", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DeepCharcoal)
+                    Text("Done", fontSize = 11.sp, color = DeepCharcoal, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        if (appointments.isEmpty()) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(32.dp).fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        Icons.Default.CalendarToday,
+                        contentDescription = null,
+                        tint = ForestSage,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "No appointments today",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = DeepCharcoal
+                    )
+                    Text(
+                        text = "Reception is ready for patient triage or walk-in QR check-in.",
+                        fontSize = 13.sp,
+                        color = MediumCharcoal,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(appointments) { apt ->
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PetAvatar(name = pet?.name ?: "Pet", species = pet?.species ?: "Dog", size = 44)
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = pet?.name ?: "Unknown Patient",
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        text = "${apt.petName} (${apt.species})",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
                                         color = DeepCharcoal
                                     )
-                                    if (pet?.isRescuePet == true) {
+                                    Text(
+                                        text = "Client: ${apt.clientName} · Time: ${apt.time}",
+                                        fontSize = 12.sp,
+                                        color = MediumCharcoal
+                                    )
+                                    Text(
+                                        text = "Reason: ${apt.reason}",
+                                        fontSize = 13.sp,
+                                        color = DeepCharcoal,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(top = 2.dp)
+                                    )
+                                    Text(
+                                        text = "Doctor: ${apt.vetName}",
+                                        fontSize = 12.sp,
+                                        color = ForestSage,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+
+                                StatusBadge(
+                                    text = apt.status.name.replace("_", " "),
+                                    backgroundColor = when (apt.status) {
+                                        AppointmentStatus.IN_CONSULTATION -> TerracottaLight
+                                        AppointmentStatus.COMPLETED -> Color(0xFFE0E7FF)
+                                        else -> SageLight
+                                    },
+                                    textColor = when (apt.status) {
+                                        AppointmentStatus.IN_CONSULTATION -> AmberTerracottaDark
+                                        AppointmentStatus.COMPLETED -> Color(0xFF3730A3)
+                                        else -> ForestSage
+                                    }
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            // Action buttons: View Dossier & Status Transitions
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        val match = pets.find { it.name.equals(apt.petName, ignoreCase = true) || it.id == apt.petId }
+                                            ?: pets.firstOrNull()
+                                        selectedDossierPet = match
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text("View Dossier", fontSize = 11.sp, color = DeepCharcoal, fontWeight = FontWeight.SemiBold)
+                                }
+
+                                when (apt.status) {
+                                    AppointmentStatus.CONFIRMED, AppointmentStatus.REQUESTED -> {
+                                        Button(
+                                            onClick = {
+                                                viewModel.updateAppointmentStatus(apt.id, AppointmentStatus.IN_CONSULTATION)
+                                                Toast.makeText(context, "${apt.petName} admitted to consultation room.", Toast.LENGTH_SHORT).show()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = AmberTerracotta),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("Start Consult", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    AppointmentStatus.IN_CONSULTATION -> {
+                                        Button(
+                                            onClick = {
+                                                viewModel.updateAppointmentStatus(apt.id, AppointmentStatus.COMPLETED)
+                                                Toast.makeText(context, "Consultation completed for ${apt.petName}.", Toast.LENGTH_SHORT).show()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = ForestSage),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("Complete", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    AppointmentStatus.COMPLETED -> {
                                         Text(
-                                            text = "• Rescue",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = ForestSage
+                                            text = "Consultation Finalized",
+                                            fontSize = 11.sp,
+                                            color = ForestSage,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.align(Alignment.CenterVertically).padding(start = 4.dp)
                                         )
                                     }
-                                }
-                                Text(
-                                    text = "Owner: ${client?.fullName ?: "N/A"} (${client?.phone ?: ""})",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = SoftSlate
-                                )
-                            }
-                        }
-                        StatusBadge(status = appt.status)
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "Reason: ${appt.reason}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MediumCharcoal
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Time: ${appt.scheduledTime} • ${appt.appointmentType}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                            color = DeepCharcoal
-                        )
-                        if (appt.isHomeEmergency) {
-                            Text(
-                                text = "Emergency / Home Visit",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = StatusRed
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    HorizontalDivider(color = BorderSubtle.copy(alpha = 0.5f))
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Status Transition Buttons
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        when (appt.status) {
-                            "Confirmed", "Requested" -> {
-                                Button(
-                                    onClick = { onUpdateAppointmentStatus(appt.id, "Checked In") },
-                                    colors = ButtonDefaults.buttonColors(containerColor = ForestSage),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.weight(1f).height(40.dp)
-                                ) {
-                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Check In", style = MaterialTheme.typography.labelMedium)
+                                    else -> {}
                                 }
                             }
-                            "Checked In" -> {
-                                Button(
-                                    onClick = {
-                                        onUpdateAppointmentStatus(appt.id, "In Progress")
-                                        onStartConsultation(appt.petId, appt.id)
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = AmberTerracotta),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.weight(1f).height(40.dp)
-                                ) {
-                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Begin Exam", style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
-                            "In Progress" -> {
-                                Button(
-                                    onClick = { onUpdateAppointmentStatus(appt.id, "Completed") },
-                                    colors = ButtonDefaults.buttonColors(containerColor = StatusGreen),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.weight(1f).height(40.dp)
-                                ) {
-                                    Icon(Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Complete Visit", style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
-                            else -> {
-                                Text(
-                                    text = "Completed",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                                    color = StatusGreen
-                                )
-                            }
-                        }
-
-                        // Clinical Record Shortcut
-                        OutlinedButton(
-                            onClick = { onStartConsultation(appt.petId, appt.id) },
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.height(40.dp)
-                        ) {
-                            Text("SOAP Record", style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
@@ -412,36 +307,113 @@ fun StaffTodayScreen(
         }
     }
 
-    if (showScanQrDialog) {
-        ScanPetQrDialog(
+    // Camera Scanner Dialog
+    if (showScanner) {
+        CameraScannerDialog(
             pets = pets,
-            clients = clients,
-            onPetSelected = { pet ->
-                scannedPet = pet
-                showScanQrDialog = false
-                showDossierDialog = true
-            },
-            onDismiss = { showScanQrDialog = false }
+            currentRole = currentRole,
+            onDismiss = { showScanner = false },
+            onPetVerified = { pet ->
+                showScanner = false
+                viewModel.checkInPetToday(pet.id, "Owner of ${pet.name}", pet.name, pet.species)
+                Toast.makeText(context, "Checked in ${pet.name} to Today's Queue.", Toast.LENGTH_SHORT).show()
+            }
         )
     }
 
-    if (showDossierDialog && scannedPet != null) {
-        val p = scannedPet!!
-        val owner = clients.find { it.id == p.ownerId }
-        val petVaccines = vaccinations.filter { it.petId == p.id }
-        val petDewormings = dewormings.filter { it.petId == p.id }
-        val petConsults = consultations.filter { it.petId == p.id }
-
-        PetMedicalDossierDialog(
-            pet = p,
-            owner = owner,
-            vaccinations = petVaccines,
-            dewormings = petDewormings,
-            consultations = petConsults,
-            onCheckInToday = { petId, clientId ->
-                onCheckInPetToday?.invoke(petId, clientId)
+    // Dossier Dialog
+    selectedDossierPet?.let { pet ->
+        PetDossierDialog(
+            pet = pet,
+            currentRole = currentRole,
+            onAdmitToQueue = {
+                viewModel.checkInPetToday(pet.id, "Owner of ${pet.name}", pet.name, pet.species)
+                selectedDossierPet = null
+                Toast.makeText(context, "${pet.name} admitted to Today's queue.", Toast.LENGTH_SHORT).show()
             },
-            onDismiss = { showDossierDialog = false }
+            onDismiss = { selectedDossierPet = null }
+        )
+    }
+
+    // Walk-in Admission Dialog
+    if (showWalkInDialog) {
+        AlertDialog(
+            onDismissRequest = { showWalkInDialog = false },
+            title = { Text("Admit Walk-in Patient", fontWeight = FontWeight.Bold, color = DeepCharcoal) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = walkInPetName,
+                        onValueChange = { walkInPetName = it },
+                        label = { Text("Pet Name *") },
+                        placeholder = { Text("e.g. Bella, Simba") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = DeepCharcoal,
+                            unfocusedTextColor = DeepCharcoal
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = walkInOwnerName,
+                        onValueChange = { walkInOwnerName = it },
+                        label = { Text("Owner / Client Name") },
+                        placeholder = { Text("e.g. Anthony Tolbert") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = DeepCharcoal,
+                            unfocusedTextColor = DeepCharcoal
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = walkInReason,
+                        onValueChange = { walkInReason = it },
+                        label = { Text("Reason for visit") },
+                        placeholder = { Text("e.g. Rabies Booster, Wound Triage") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = DeepCharcoal,
+                            unfocusedTextColor = DeepCharcoal
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = walkInVet,
+                        onValueChange = { walkInVet = it },
+                        label = { Text("Attending Vet") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = DeepCharcoal,
+                            unfocusedTextColor = DeepCharcoal
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (walkInPetName.isNotBlank()) {
+                            viewModel.checkInPetToday(
+                                petId = 1,
+                                clientName = walkInOwnerName.ifBlank { "Walk-in Client" },
+                                petName = walkInPetName.trim(),
+                                species = "Canine (Dog)"
+                            )
+                            showWalkInDialog = false
+                            walkInPetName = ""
+                            walkInOwnerName = ""
+                            walkInReason = ""
+                            Toast.makeText(context, "Walk-in admitted to Today's Queue.", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestSage)
+                ) {
+                    Text("Admit Patient")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showWalkInDialog = false }) {
+                    Text("Cancel", color = MediumCharcoal)
+                }
+            }
         )
     }
 }

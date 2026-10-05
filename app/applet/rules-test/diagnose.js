@@ -1,9 +1,0 @@
-console.log("FIRESTORE_EMULATOR_HOST =", process.env.FIRESTORE_EMULATOR_HOST);
-console.log("FIREBASE_EMULATOR_HUB =", process.env.FIREBASE_EMULATOR_HUB);
-const http = require('http');
-const host = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:59594';
-const [h, p] = host.split(':');
-http.get(`http://${h}:${p}/`, (res) => {
-  console.log("Response from emulator on", host, ": statusCode =", res.statusCode);
-  res.on('data', d => console.log("Data:", d.toString()));
-}).on('error', e => console.error("HTTP error:", e.message));

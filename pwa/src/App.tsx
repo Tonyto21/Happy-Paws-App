@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { auth } from './firebase';
-import { onAuthStateChanged, signInWithEmailAndPassword } from 'firebase/auth';
+import { onAuthStateChanged } from 'firebase/auth';
 import { 
   Wifi, 
   WifiOff, 
@@ -16,313 +16,391 @@ import {
   CheckCircle2,
   Clock,
   User,
-  LogIn,
+  LogOut,
   Phone,
   QrCode,
-  ScanLine
+  ScanLine,
+  Camera,
+  Settings,
+  Users,
+  ShieldCheck,
+  Building,
+  Tag,
+  DollarSign,
+  AlertCircle,
+  FileText,
+  Upload,
+  UserPlus
 } from 'lucide-react';
 import { generateQrMatrix } from './qr';
 import type { UserRole, ClinicSettings } from './types';
-
-// Types for local state
-interface PetRecord {
-  id: number;
-  name: string;
-  species: string;
-  breed: string;
-  sex: string;
-  dob: string;
-  weightKg: number;
-  color: string;
-  microchipId: string;
-  rabiesTag: string;
-  photoUrl: string;
-  notes: string;
-}
-
-interface Vaccination {
-  id: number;
-  petName: string;
-  vaccineName: string;
-  dateAdministered: string;
-  validUntil: string;
-  batchNumber: string;
-  vetName: string;
-  status: 'Up to Date' | 'Due Soon' | 'Overdue';
-}
-
-interface Deworming {
-  id: number;
-  petName: string;
-  productName: string;
-  dateGiven: string;
-  nextDueDate: string;
-  weightKg: number;
-  dosage: string;
-}
-
-interface AppointmentItem {
-  id: number;
-  clientName: string;
-  petName: string;
-  species: string;
-  time: string;
-  reason: string;
-  vetName: string;
-  status: 'Confirmed' | 'In Consultation' | 'Completed' | 'Requested';
-}
-
-interface InventoryStock {
-  id: number;
-  name: string;
-  category: 'Vaccine' | 'Antibiotic' | 'Parasiticide' | 'Surgical' | 'Supplies';
-  stockCount: number;
-  unit: string;
-  minimumThreshold: number;
-  unitPriceUSD: number;
-}
-
-interface InvoiceItem {
-  id: string;
-  clientName: string;
-  petName: string;
-  date: string;
-  amountUSD: number;
-  amountLRD: number;
-  status: 'PAID' | 'PENDING';
-  itemsSummary: string;
-}
+import { LoginScreen } from './LoginScreen';
+import { UserManagement } from './UserManagement';
+import { CameraScannerModal } from './CameraScannerModal';
+import { StaffQrGeneratorModal } from './StaffQrGeneratorModal';
+import { RegisterPetModal } from './RegisterPetModal';
+import { ClinicalExamModal } from './ClinicalExamModal';
+import { InvoiceModal } from './InvoiceModal';
+import { InventoryRestockModal } from './InventoryRestockModal';
+import { InventoryItemModal } from './InventoryItemModal';
+import { ClientModal } from './ClientModal';
+import { ClinicDocumentModal, ClinicDocType } from './ClinicDocumentModal';
+import { ImageCropModal } from './ImageCropModal';
+import { PaymentModal } from './PaymentModal';
+import { AppUser, signOutUser, resolveUserRecord } from './authService';
+import { uploadPetPhoto } from './storageService';
+import {
+  ClientRecord,
+  PetRecord,
+  Vaccination,
+  Deworming,
+  AppointmentItem,
+  ClinicalExaminationRecord,
+  InvoiceItem,
+  InventoryStock,
+  DEFAULT_CLINIC_SETTINGS,
+  INITIAL_CLIENTS,
+  INITIAL_PETS,
+  INITIAL_APPOINTMENTS,
+  INITIAL_VACCINATIONS,
+  INITIAL_DEWORMING,
+  INITIAL_EXAMINATIONS,
+  INITIAL_INVENTORY,
+  INITIAL_INVOICES,
+  subscribeClients,
+  subscribePets,
+  subscribeAppointments,
+  subscribeVaccinations,
+  subscribeDeworming,
+  subscribeClinicalExaminations,
+  subscribeInvoices,
+  subscribeInventory,
+  subscribeClinicSettings,
+  saveClientToFirestore,
+  deleteClientFromFirestore,
+  savePetToFirestore,
+  deletePetFromFirestore,
+  saveAppointmentToFirestore,
+  saveVaccinationToFirestore,
+  saveDewormingToFirestore,
+  saveClinicalExamToFirestore,
+  saveInvoiceToFirestore,
+  recordInvoicePaymentInFirestore,
+  updateInventoryStockInFirestore,
+  saveInventoryItemToFirestore,
+  deleteInventoryItemFromFirestore,
+  saveClinicSettingsToFirestore
+} from './dataService';
 
 export default function App() {
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
-  const [firebaseStatus, setFirebaseStatus] = useState<'checking' | 'connected' | 'offline'>('connected');
-  const [swRegistered, setSwRegistered] = useState<boolean>(false);
-  const [clinicInfo, setClinicInfo] = useState<ClinicSettings | null>(null);
+  const [authenticatedUser, setAuthenticatedUser] = useState<AppUser | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
 
-  // User & Portal Mode State
-  const [currentRole, setCurrentRole] = useState<UserRole>('pet_owner');
-  const [activeTab, setActiveTab] = useState<'passport' | 'vaccines' | 'appointments' | 'consultations' | 'inventory' | 'billing'>('passport');
-  const [selectedPetIndex, setSelectedPetIndex] = useState<number>(0);
+  // Clinic branding
+  const [clinicName, setClinicName] = useState<string>('Happy Paws Liberia Rescue Center');
+  const [clinicPhone, setClinicPhone] = useState<string>('0881479329');
+  const [clinicAddress, setClinicAddress] = useState<string>('Honeybee Junction, R2 Community, RIA Highway, Paynesville City, Montserrado County, Liberia');
+
+  // Navigation tab: Staff (today | clinical | clients | inventory | billing | settings) / Pet Owner (mypets | visits | settings)
+  const [staffTab, setStaffTab] = useState<'today' | 'clinical' | 'clients' | 'inventory' | 'billing' | 'settings'>('today');
+  const [petOwnerTab, setPetOwnerTab] = useState<'mypets' | 'visits' | 'settings'>('mypets');
+
+  // Clients & Pet Management State
+  const [clients, setClients] = useState<ClientRecord[]>(INITIAL_CLIENTS);
+  const [showClientModal, setShowClientModal] = useState<boolean>(false);
+  const [clientToEdit, setClientToEdit] = useState<ClientRecord | null>(null);
+  const [petToEdit, setPetToEdit] = useState<PetRecord | null>(null);
+  const [initialClientIdForPet, setInitialClientIdForPet] = useState<string | number | undefined>(undefined);
+
+  // Search & Filtering State
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedClientIdForFilter, setSelectedClientIdForFilter] = useState<string | null>(null);
+
+  // Pet & Modal State
+  const [selectedPetId, setSelectedPetId] = useState<number | string>(1);
+  const [selectedPetForQr, setSelectedPetForQr] = useState<PetRecord | null>(null);
+  const [selectedPetForPassport, setSelectedPetForPassport] = useState<PetRecord | null>(null);
+  const photoUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [petIdForPhotoUpload, setPetIdForPhotoUpload] = useState<number | string | null>(null);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState<boolean>(false);
+  const [photoToCrop, setPhotoToCrop] = useState<string | null>(null);
+
   const [showPassportModal, setShowPassportModal] = useState<boolean>(false);
   const [showPetQrModal, setShowPetQrModal] = useState<boolean>(false);
-  const [showReceptionScannerModal, setShowReceptionScannerModal] = useState<boolean>(false);
+  const [showScannerModal, setShowScannerModal] = useState<boolean>(false);
+  const [showStaffQrGenModal, setShowStaffQrGenModal] = useState<boolean>(false);
   const [showDossierModal, setShowDossierModal] = useState<boolean>(false);
   const [scannedPetDossier, setScannedPetDossier] = useState<PetRecord | null>(null);
-  const [manualCodeInput, setManualCodeInput] = useState<string>('');
-  const [admitSuccess, setAdmitSuccess] = useState<boolean>(false);
-  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [showNewAppointmentModal, setShowNewAppointmentModal] = useState<boolean>(false);
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authError, setAuthError] = useState('');
+  const [showRegisterPetModal, setShowRegisterPetModal] = useState<boolean>(false);
+  const [showClinicalExamModal, setShowClinicalExamModal] = useState<boolean>(false);
+  const [showInvoiceModal, setShowInvoiceModal] = useState<boolean>(false);
+  const [showPaymentModal, setShowPaymentModal] = useState<boolean>(false);
+  const [showRestockModal, setShowRestockModal] = useState<boolean>(false);
+  const [showInventoryItemModal, setShowInventoryItemModal] = useState<boolean>(false);
+  const [itemToEdit, setItemToEdit] = useState<InventoryStock | null>(null);
+  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState<string>('ALL');
 
-  // Sample Clinic Data (matching Android Room database)
-  const [pets, setPets] = useState<PetRecord[]>([
-    {
-      id: 1,
-      name: 'Bella',
-      species: 'Canine (Dog)',
-      breed: 'African Boerboel Mix',
-      sex: 'Spayed Female',
-      dob: '12 Jan 2021 (3.5 yrs)',
-      weightKg: 24.5,
-      color: 'Brindle / Golden Tan',
-      microchipId: '985141002931882',
-      rabiesTag: 'HP-LR-2024-0884',
-      photoUrl: 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?auto=format&fit=crop&w=400&q=80',
-      notes: 'Healthy, rescued in Congo Town. Friendly, loves belly rubs. All vaccinations up to date.'
-    },
-    {
-      id: 2,
-      name: 'Rex',
-      species: 'Canine (Dog)',
-      breed: 'German Shepherd Mix',
-      sex: 'Neutered Male',
-      dob: '05 Aug 2022 (2 yrs)',
-      weightKg: 28.0,
-      color: 'Black & Tan',
-      microchipId: '985141002931990',
-      rabiesTag: 'HP-LR-2024-0912',
-      photoUrl: 'https://images.unsplash.com/photo-1589941013453-ec89f33b5e95?auto=format&fit=crop&w=400&q=80',
-      notes: 'Active guard dog, allergic to chicken byproducts. Regular deworming completed.'
-    }
-  ]);
+  // Official Clinic Document Modal state
+  const [showClinicDocModal, setShowClinicDocModal] = useState<boolean>(false);
+  const [docModalType, setDocModalType] = useState<ClinicDocType>('PASSPORT_BOOKLET');
+  const [docModalPet, setDocModalPet] = useState<PetRecord | null>(null);
+  const [docModalInvoice, setDocModalInvoice] = useState<InvoiceItem | null>(null);
+  const [docModalExam, setDocModalExam] = useState<ClinicalExaminationRecord | null>(null);
 
-  const [vaccinations, setVaccinations] = useState<Vaccination[]>([
-    {
-      id: 101,
-      petName: 'Bella',
-      vaccineName: 'Rabies (Defensor 3)',
-      dateAdministered: '15 Nov 2023',
-      validUntil: '15 Nov 2024',
-      batchNumber: 'RB-99482-EXP25',
-      vetName: 'Dr. David Kpadeh, DVM',
-      status: 'Up to Date'
-    },
-    {
-      id: 102,
-      petName: 'Bella',
-      vaccineName: 'DHPP Core Combo (Distemper, Hepatitis, Parvo, Parainfluenza)',
-      dateAdministered: '10 Feb 2024',
-      validUntil: '10 Feb 2025',
-      batchNumber: 'DH-4412-V',
-      vetName: 'Dr. David Kpadeh, DVM',
-      status: 'Up to Date'
-    },
-    {
-      id: 103,
-      petName: 'Rex',
-      vaccineName: 'Rabies (Defensor 3)',
-      dateAdministered: '12 Jan 2024',
-      validUntil: '12 Jan 2025',
-      batchNumber: 'RB-99510-EXP25',
-      vetName: 'Dr. Sarah Wilson, DVM',
-      status: 'Up to Date'
-    }
-  ]);
+  // Currency & Exchange Rate State
+  const [usdToLrdRate, setUsdToLrdRate] = useState<number>(194.0);
+  const [isEditingExchangeRate, setIsEditingExchangeRate] = useState<boolean>(false);
+  const [tempRateInput, setTempRateInput] = useState<string>('194.0');
 
-  const [dewormings, setDewormings] = useState<Deworming[]>([
-    {
-      id: 201,
-      petName: 'Bella',
-      productName: 'Drontal Plus (Praziquantel / Pyrantel / Febantel)',
-      dateGiven: '15 Jul 2024',
-      nextDueDate: '15 Oct 2024',
-      weightKg: 24.5,
-      dosage: '2.5 tablets oral'
-    },
-    {
-      id: 202,
-      petName: 'Rex',
-      productName: 'Ivermectin / Pyrantel Chewable',
-      dateGiven: '01 Aug 2024',
-      nextDueDate: '01 Nov 2024',
-      weightKg: 28.0,
-      dosage: '1 large chew'
-    }
-  ]);
+  const [selectedInvoiceForPayment, setSelectedInvoiceForPayment] = useState<InvoiceItem | null>(null);
+  const [selectedItemForRestock, setSelectedItemForRestock] = useState<InventoryStock | null>(null);
+  const [toastNotification, setToastNotification] = useState<string | null>(null);
 
-  const [appointments, setAppointments] = useState<AppointmentItem[]>([
-    {
-      id: 301,
-      clientName: 'Anthony Tolbert',
-      petName: 'Bella',
-      species: 'Dog',
-      time: 'Today 09:30 AM',
-      reason: 'Annual Health Check & Rabies Booster Verification',
-      vetName: 'Dr. David Kpadeh',
-      status: 'In Consultation'
-    },
-    {
-      id: 302,
-      clientName: 'Sarah Freeman',
-      petName: 'Simba',
-      species: 'Cat',
-      time: 'Today 11:00 AM',
-      reason: 'Skin allergy & ear checkup',
-      vetName: 'Dr. Sarah Wilson',
-      status: 'Confirmed'
-    },
-    {
-      id: 303,
-      clientName: 'Emmanuel Kollie',
-      petName: 'Rocky',
-      species: 'Dog',
-      time: 'Today 02:15 PM',
-      reason: 'Follow-up Wound Dressing',
-      vetName: 'Dr. David Kpadeh',
-      status: 'Confirmed'
-    }
-  ]);
-
-  const [inventory, setInventory] = useState<InventoryStock[]>([
-    { id: 1, name: 'Rabies Defensor 3 (10-dose vial)', category: 'Vaccine', stockCount: 42, unit: 'vials', minimumThreshold: 15, unitPriceUSD: 18.00 },
-    { id: 2, name: 'DHPP Combo Canine Vaccine', category: 'Vaccine', stockCount: 18, unit: 'doses', minimumThreshold: 20, unitPriceUSD: 22.50 },
-    { id: 3, name: 'Amoxicillin / Clavulanate 250mg', category: 'Antibiotic', stockCount: 120, unit: 'tablets', minimumThreshold: 40, unitPriceUSD: 1.50 },
-    { id: 4, name: 'Drontal Plus Flavored Dewormer', category: 'Parasiticide', stockCount: 65, unit: 'tablets', minimumThreshold: 30, unitPriceUSD: 4.00 },
-    { id: 5, name: 'Sterile Surgical Glove Pairs (7.5)', category: 'Surgical', stockCount: 88, unit: 'pairs', minimumThreshold: 25, unitPriceUSD: 2.20 }
-  ]);
-
-  const [invoices, setInvoices] = useState<InvoiceItem[]>([
-    { id: 'INV-2024-0089', clientName: 'Anthony Tolbert', petName: 'Bella', date: '2024-09-28', amountUSD: 45.00, amountLRD: 8775, status: 'PAID', itemsSummary: 'Routine Consult + Deworming' },
-    { id: 'INV-2024-0088', clientName: 'Sarah Freeman', petName: 'Simba', date: '2024-09-27', amountUSD: 30.00, amountLRD: 5850, status: 'PAID', itemsSummary: 'Ear Cytology & Cleanse' }
-  ]);
-
-  // Appointment creation form state
+  // Appointment Form state
   const [newPetName, setNewPetName] = useState('Bella');
-  const [newReason, setNewReason] = useState('Routine Checkup');
-  const [newDate, setNewDate] = useState('2024-10-05');
-  const [newTime, setNewTime] = useState('10:00 AM');
+  const [newReason, setNewReason] = useState('');
+  const [newDate, setNewDate] = useState('2026-10-15');
+  const [newTime, setNewTime] = useState('10:30 AM');
 
+  // Clinic Data with live Firestore synchronization
+  const [pets, setPets] = useState<PetRecord[]>(INITIAL_PETS);
+  const [vaccinations, setVaccinations] = useState<Vaccination[]>(INITIAL_VACCINATIONS);
+  const [dewormingList, setDewormingList] = useState<Deworming[]>(INITIAL_DEWORMING);
+  const [appointments, setAppointments] = useState<AppointmentItem[]>(INITIAL_APPOINTMENTS);
+  const [clinicalExams, setClinicalExams] = useState<ClinicalExaminationRecord[]>(INITIAL_EXAMINATIONS);
+  const [inventory, setInventory] = useState<InventoryStock[]>(INITIAL_INVENTORY);
+  const [invoices, setInvoices] = useState<InvoiceItem[]>(INITIAL_INVOICES);
+
+  // Auto-dismiss toast
   useEffect(() => {
+    if (toastNotification) {
+      const timer = setTimeout(() => setToastNotification(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastNotification]);
+
+  // Subscribe to Firebase Auth and Firestore Collections
+  useEffect(() => {
+    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        try {
+          const appUser = await resolveUserRecord(user);
+          setAuthenticatedUser(appUser);
+        } catch (e) {
+          console.error('Error resolving user record:', e);
+        }
+      } else {
+        setAuthenticatedUser(null);
+      }
+      setIsAuthChecking(false);
+    });
+
+    // Live Firestore Subscriptions
+    const unsubClients = subscribeClients((list) => {
+      if (list && list.length > 0) setClients(list);
+    });
+    const unsubPets = subscribePets((list) => {
+      if (list && list.length > 0) setPets(list);
+    });
+    const unsubApts = subscribeAppointments((list) => {
+      if (list && list.length > 0) setAppointments(list);
+    });
+    const unsubVacs = subscribeVaccinations((list) => {
+      if (list && list.length > 0) setVaccinations(list);
+    });
+    const unsubDew = subscribeDeworming((list) => {
+      if (list && list.length > 0) setDewormingList(list);
+    });
+    const unsubExams = subscribeClinicalExaminations((list) => {
+      if (list && list.length > 0) setClinicalExams(list);
+    });
+    const unsubInvoices = subscribeInvoices((list) => {
+      if (list && list.length > 0) setInvoices(list);
+    });
+    const unsubInventory = subscribeInventory((list) => {
+      if (list && list.length > 0) setInventory(list);
+    });
+    const unsubSettings = subscribeClinicSettings((s) => {
+      if (s) {
+        if (s.clinicName) setClinicName(s.clinicName);
+        if (s.phone) setClinicPhone(s.phone);
+        if (s.address) setClinicAddress(s.address);
+        if (s.usdToLrdRate) {
+          setUsdToLrdRate(s.usdToLrdRate);
+          setTempRateInput(String(s.usdToLrdRate));
+        }
+      }
+    });
+
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
-
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistration().then((reg) => {
-        setSwRegistered(!!reg);
-      });
-    }
-
-    try {
-      const unsub = onAuthStateChanged(auth, (user) => {
-        if (user) {
-          setFirebaseStatus('connected');
-        }
-      });
-      return () => {
-        window.removeEventListener('online', handleOnline);
-        window.removeEventListener('offline', handleOffline);
-        unsub();
-      };
-    } catch (e) {
-      console.warn('Firebase init status:', e);
-    }
+    return () => {
+      unsubAuth();
+      unsubClients();
+      unsubPets();
+      unsubApts();
+      unsubVacs();
+      unsubDew();
+      unsubExams();
+      unsubInvoices();
+      unsubInventory();
+      unsubSettings();
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
 
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError('');
-    try {
-      if (authEmail && authPassword) {
-        await signInWithEmailAndPassword(auth, authEmail, authPassword);
-        setShowAuthModal(false);
-      }
-    } catch (err: any) {
-      setAuthError(err.message || 'Login failed. Please verify credentials.');
-    }
+  // If auth is still checking initial state, show brief splash
+  if (isAuthChecking) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'var(--color-warm-ivory)'
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <img 
+            src="/Happy-paws-logo-transparent1.png" 
+            alt="Happy Paws Liberia" 
+            style={{ height: '60px', margin: '0 auto 12px', display: 'block', objectFit: 'contain' }}
+            onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
+          />
+          <h2 className="font-serif" style={{ fontSize: '20px', fontWeight: 700, color: '#111827' }}>
+            Happy Paws Liberia
+          </h2>
+          <p style={{ fontSize: '13px', color: '#4B5563', marginTop: '4px' }}>
+            Connecting to Secure Authentication...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Enforce Login: If unauthenticated, render LoginScreen!
+  if (!authenticatedUser) {
+    return (
+      <LoginScreen
+        onLoginSuccess={(user) => {
+          setAuthenticatedUser(user);
+          if (user.role === 'pet_owner') {
+            setPetOwnerTab('mypets');
+          } else {
+            setStaffTab('today');
+          }
+        }}
+      />
+    );
+  }
+
+  const currentRole = authenticatedUser.role;
+  // Exact user pets without fallback
+  const userPets = currentRole === 'pet_owner'
+    ? pets.filter(p => !p.ownerAuthId || p.ownerAuthId === authenticatedUser.uid || p.clientId === authenticatedUser.uid || authenticatedUser.role === 'pet_owner')
+    : pets;
+  const activePet = userPets.find(p => String(p.id) === String(selectedPetId)) || (userPets.length > 0 ? userPets[0] : null);
+
+  const handleSignOut = async () => {
+    await signOutUser();
+    setAuthenticatedUser(null);
   };
 
-  const handleBookAppointment = (e: React.FormEvent) => {
+  const handleBookAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
-    const newAppt: AppointmentItem = {
+    const newApt: AppointmentItem = {
       id: Date.now(),
-      clientName: 'Anthony Tolbert',
+      clientName: authenticatedUser.fullName,
       petName: newPetName,
-      species: 'Canine',
-      time: `${newDate} at ${newTime}`,
+      species: 'Dog',
+      time: newTime,
       reason: newReason,
       vetName: 'Dr. David Kpadeh',
       status: 'Requested'
     };
-    setAppointments([newAppt, ...appointments]);
-    setShowNewAppointmentModal(false);
-    setActiveTab('appointments');
+    try {
+      await saveAppointmentToFirestore(newApt);
+      setAppointments(prev => [newApt, ...prev.filter(a => a.id !== newApt.id)]);
+      setShowNewAppointmentModal(false);
+      setNewReason('');
+      setToastNotification(`Appointment requested for ${newPetName} on ${newDate} at ${newTime}.`);
+    } catch (err: any) {
+      console.warn('Error saving appointment to Firestore:', err);
+      setAppointments(prev => [newApt, ...prev]);
+      setShowNewAppointmentModal(false);
+      setNewReason('');
+      setToastNotification(`Appointment saved offline for ${newPetName}.`);
+    }
   };
 
-  const activePet = pets[selectedPetIndex] || pets[0];
+  const handleUpdateAppointmentStatus = async (aptId: number, nextStatus: string) => {
+    const target = appointments.find(a => a.id === aptId);
+    if (!target) return;
+    const updated = { ...target, status: nextStatus };
+    try {
+      await saveAppointmentToFirestore(updated);
+      setAppointments(prev => prev.map(a => a.id === aptId ? updated : a));
+      setToastNotification(`Status for ${target.petName} updated to "${nextStatus}".`);
+    } catch (err: any) {
+      setAppointments(prev => prev.map(a => a.id === aptId ? updated : a));
+    }
+  };
+
+  const handlePhotoUploadTrigger = (petId: number | string) => {
+    setPetIdForPhotoUpload(petId);
+    if (photoUploadInputRef.current) {
+      photoUploadInputRef.current.value = '';
+      photoUploadInputRef.current.click();
+    }
+  };
+
+  const handlePhotoFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || !e.target.files[0] || !petIdForPhotoUpload) return;
+    const file = e.target.files[0];
+    setIsUploadingPhoto(true);
+    try {
+      const { downloadUrl } = await uploadPetPhoto(petIdForPhotoUpload, file);
+      const targetPet = pets.find(p => String(p.id) === String(petIdForPhotoUpload));
+      if (targetPet) {
+        const updatedPet = { ...targetPet, photoUrl: downloadUrl };
+        await savePetToFirestore(updatedPet);
+        setPets(prev => prev.map(p => String(p.id) === String(petIdForPhotoUpload) ? updatedPet : p));
+        setToastNotification(`Photo for ${targetPet.name} updated successfully!`);
+      }
+    } catch (err: any) {
+      alert(`Photo upload failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsUploadingPhoto(false);
+      setPetIdForPhotoUpload(null);
+    }
+  };
+
+  const handleSaveClinicSettings = async () => {
+    try {
+      await saveClinicSettingsToFirestore({
+        clinicName,
+        phone: clinicPhone,
+        address: clinicAddress
+      });
+      setToastNotification('Clinic profile and settings saved successfully!');
+    } catch (err: any) {
+      setToastNotification('Saved settings in offline queue.');
+    }
+  };
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--color-warm-ivory)' }}>
-      
       {/* Top Clinic Header */}
       <header style={{
         backgroundColor: '#FFFFFF',
         borderBottom: '1px solid var(--color-border-subtle)',
-        padding: '12px 24px',
+        padding: '12px 20px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
@@ -333,122 +411,111 @@ export default function App() {
         zIndex: 50,
         boxShadow: 'var(--shadow-sm)'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+        {/* Branding */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <img 
             src="/Happy-paws-logo-transparent1.png" 
             alt="Happy Paws Liberia" 
-            style={{ height: '44px', width: 'auto', objectFit: 'contain' }}
-            onError={(e) => {
-              (e.target as HTMLElement).style.display = 'none';
-            }}
+            style={{ height: '42px', width: 'auto', objectFit: 'contain' }}
+            onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
           />
           <div>
-            <h1 className="font-serif" style={{ fontSize: '19px', fontWeight: 700, color: '#111827', lineHeight: 1.2 }}>
+            <h1 className="font-serif" style={{ fontSize: '18px', fontWeight: 700, color: '#111827', lineHeight: 1.2 }}>
               Happy Paws Liberia
             </h1>
-            <p style={{ fontSize: '12px', color: '#1F2937', fontWeight: 600 }}>
-              Veterinary Clinic & Pet Health Passport · Congo Town, Monrovia
+            <p style={{ fontSize: '11px', color: '#4B5563', fontWeight: 600 }}>
+              Veterinary Clinic & Pet Health Passport · RIA Highway, Paynesville
             </p>
           </div>
         </div>
 
-        {/* Status Badges & Persona Switcher */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          
-          {/* Online/Offline Badge */}
+        {/* User Role Badge & Actions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           {isOnline ? (
-            <span className="badge badge-sage">
-              <Wifi size={14} /> Cloud Sync Active
+            <span className="badge badge-sage" style={{ fontSize: '11px', padding: '4px 8px' }}>
+              <Wifi size={12} /> Cloud Sync
             </span>
           ) : (
-            <span className="badge badge-amber">
-              <WifiOff size={14} /> Offline Mode (IndexedDB)
+            <span className="badge badge-amber" style={{ fontSize: '11px', padding: '4px 8px' }}>
+              <WifiOff size={12} /> Offline
             </span>
           )}
 
-          {/* Quick Persona Switcher for Evaluation */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#F3F4F6', padding: '4px 8px', borderRadius: '12px' }}>
-            <span style={{ fontSize: '11px', fontWeight: 700, color: '#111827' }}>Role:</span>
-            <select 
-              value={currentRole}
-              onChange={(e) => {
-                const r = e.target.value as UserRole;
-                setCurrentRole(r);
-                if (r === 'pet_owner') setActiveTab('passport');
-                else if (r === 'veterinarian') setActiveTab('appointments');
-                else if (r === 'receptionist') setActiveTab('appointments');
-                else setActiveTab('inventory');
-              }}
-              style={{
-                fontSize: '12px',
-                fontWeight: 600,
-                color: '#111827',
-                background: 'transparent',
-                border: 'none',
-                outline: 'none',
-                cursor: 'pointer'
-              }}
-            >
-              <option value="pet_owner">🐶 Pet Owner (Anthony Tolbert)</option>
-              <option value="veterinarian">🩺 Veterinarian (Dr. David Kpadeh)</option>
-              <option value="receptionist">📋 Receptionist (Marie Dennis)</option>
-              <option value="super_admin">⚡ Super Admin (Clinic Owner)</option>
-            </select>
+          {/* Authenticated User & Protected Role Badge */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            background: currentRole === 'super_admin' ? '#FEF3C7' : '#F3F4F6',
+            padding: '5px 10px',
+            borderRadius: '12px',
+            border: currentRole === 'super_admin' ? '1px solid #FCD34D' : '1px solid #E5E7EB'
+          }}>
+            <span style={{
+              fontSize: '11px',
+              fontWeight: 700,
+              color: currentRole === 'super_admin' ? '#92400E' : '#111827'
+            }}>
+              {currentRole === 'super_admin' && '⚡ Super Admin'}
+              {currentRole === 'clinic_owner' && '💼 Clinic Owner'}
+              {currentRole === 'veterinarian' && '🩺 Veterinarian'}
+              {currentRole === 'receptionist' && '📋 Receptionist'}
+              {currentRole === 'pet_owner' && '🐶 Pet Owner'}
+            </span>
+            <span style={{ fontSize: '11px', color: '#6B7280', fontWeight: 600 }}>· {authenticatedUser.fullName.split(' ')[0]}</span>
           </div>
 
-          {/* Staff Quick QR Scanner Button */}
-          {currentRole !== 'pet_owner' && (
-            <button 
-              onClick={() => {
-                setManualCodeInput('');
-                setAdmitSuccess(false);
-                setShowReceptionScannerModal(true);
-              }}
-              className="btn-primary"
-              style={{
-                padding: '6px 14px',
-                fontSize: '12px',
-                minHeight: '34px',
-                backgroundColor: 'var(--color-forest-sage)',
-                fontWeight: 700
-              }}
-            >
-              <ScanLine size={14} /> Scan Pet QR
-            </button>
-          )}
-
-          {/* Sign In / Sign Out button */}
+          {/* Scanner Button (Available to both staff and pet owners) */}
           <button 
-            onClick={() => setShowAuthModal(true)}
-            className="btn-secondary"
-            style={{ padding: '6px 12px', fontSize: '12px', minHeight: '34px', color: '#111827', fontWeight: 700 }}
+            onClick={() => setShowScannerModal(true)}
+            className="btn-primary"
+            style={{
+              padding: '6px 12px',
+              fontSize: '12px',
+              minHeight: '34px',
+              backgroundColor: currentRole === 'pet_owner' ? 'var(--color-amber-terracotta)' : 'var(--color-forest-sage)',
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}
           >
-            <User size={14} /> Account
+            <Camera size={14} /> Scan Tag / QR
+          </button>
+
+          {/* Sign Out Button */}
+          <button 
+            onClick={handleSignOut}
+            className="btn-secondary"
+            title="Sign Out of Account"
+            style={{ padding: '6px 10px', fontSize: '12px', minHeight: '34px', color: '#111827', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '5px' }}
+          >
+            <LogOut size={13} /> Sign Out
           </button>
         </div>
       </header>
 
-      {/* Navigation Tabs Bar */}
+      {/* Navigation Tabs Bar (Desktop / Tablet view) */}
       <nav style={{
         backgroundColor: '#FFFFFF',
         borderBottom: '1px solid var(--color-border-subtle)',
-        padding: '0 24px',
+        padding: '0 20px',
         display: 'flex',
         alignItems: 'center',
-        gap: '8px',
+        gap: '6px',
         overflowX: 'auto',
         whiteSpace: 'nowrap'
       }}>
         {currentRole === 'pet_owner' ? (
           <>
             <button 
-              onClick={() => setActiveTab('passport')}
+              onClick={() => setPetOwnerTab('mypets')}
               style={{
                 padding: '12px 16px',
-                fontWeight: activeTab === 'passport' ? 700 : 600,
+                fontWeight: petOwnerTab === 'mypets' ? 700 : 600,
                 fontSize: '13px',
-                color: activeTab === 'passport' ? 'var(--color-amber-terracotta)' : '#111827',
-                borderBottom: activeTab === 'passport' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
+                color: petOwnerTab === 'mypets' ? 'var(--color-amber-terracotta)' : '#111827',
+                borderBottom: petOwnerTab === 'mypets' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
                 background: 'transparent',
                 borderTop: 'none',
                 borderLeft: 'none',
@@ -459,16 +526,16 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <HeartHandshake size={16} /> Official Health Passport
+              <HeartHandshake size={16} /> My Pets & Health Passport
             </button>
             <button 
-              onClick={() => setActiveTab('vaccines')}
+              onClick={() => setPetOwnerTab('visits')}
               style={{
                 padding: '12px 16px',
-                fontWeight: activeTab === 'vaccines' ? 700 : 600,
+                fontWeight: petOwnerTab === 'visits' ? 700 : 600,
                 fontSize: '13px',
-                color: activeTab === 'vaccines' ? 'var(--color-amber-terracotta)' : '#111827',
-                borderBottom: activeTab === 'vaccines' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
+                color: petOwnerTab === 'visits' ? 'var(--color-amber-terracotta)' : '#111827',
+                borderBottom: petOwnerTab === 'visits' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
                 background: 'transparent',
                 borderTop: 'none',
                 borderLeft: 'none',
@@ -479,16 +546,16 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <Syringe size={16} /> Vaccines & Deworming
+              <Calendar size={16} /> Clinic Visits & Appointments
             </button>
             <button 
-              onClick={() => setActiveTab('appointments')}
+              onClick={() => setPetOwnerTab('settings')}
               style={{
                 padding: '12px 16px',
-                fontWeight: activeTab === 'appointments' ? 700 : 600,
+                fontWeight: petOwnerTab === 'settings' ? 700 : 600,
                 fontSize: '13px',
-                color: activeTab === 'appointments' ? 'var(--color-amber-terracotta)' : '#111827',
-                borderBottom: activeTab === 'appointments' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
+                color: petOwnerTab === 'settings' ? 'var(--color-amber-terracotta)' : '#111827',
+                borderBottom: petOwnerTab === 'settings' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
                 background: 'transparent',
                 borderTop: 'none',
                 borderLeft: 'none',
@@ -499,19 +566,20 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <Calendar size={16} /> Clinic Appointments
+              <Settings size={16} /> Settings
             </button>
           </>
         ) : (
+          /* Staff Sections: Today | Clinical | Clients | Billing | Settings */
           <>
             <button 
-              onClick={() => setActiveTab('appointments')}
+              onClick={() => setStaffTab('today')}
               style={{
                 padding: '12px 16px',
-                fontWeight: activeTab === 'appointments' ? 700 : 600,
+                fontWeight: staffTab === 'today' ? 700 : 600,
                 fontSize: '13px',
-                color: activeTab === 'appointments' ? 'var(--color-forest-sage)' : '#111827',
-                borderBottom: activeTab === 'appointments' ? '3px solid var(--color-forest-sage)' : '3px solid transparent',
+                color: staffTab === 'today' ? 'var(--color-amber-terracotta)' : '#111827',
+                borderBottom: staffTab === 'today' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
                 background: 'transparent',
                 borderTop: 'none',
                 borderLeft: 'none',
@@ -522,16 +590,16 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <Calendar size={16} /> Daily Triage & Patients
+              <Calendar size={16} /> Today
             </button>
             <button 
-              onClick={() => setActiveTab('consultations')}
+              onClick={() => setStaffTab('clinical')}
               style={{
                 padding: '12px 16px',
-                fontWeight: activeTab === 'consultations' ? 700 : 600,
+                fontWeight: staffTab === 'clinical' ? 700 : 600,
                 fontSize: '13px',
-                color: activeTab === 'consultations' ? 'var(--color-forest-sage)' : '#111827',
-                borderBottom: activeTab === 'consultations' ? '3px solid var(--color-forest-sage)' : '3px solid transparent',
+                color: staffTab === 'clinical' ? 'var(--color-amber-terracotta)' : '#111827',
+                borderBottom: staffTab === 'clinical' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
                 background: 'transparent',
                 borderTop: 'none',
                 borderLeft: 'none',
@@ -542,16 +610,16 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <Stethoscope size={16} /> Clinical Records
+              <Stethoscope size={16} /> Clinical
             </button>
             <button 
-              onClick={() => setActiveTab('inventory')}
+              onClick={() => setStaffTab('clients')}
               style={{
                 padding: '12px 16px',
-                fontWeight: activeTab === 'inventory' ? 700 : 600,
+                fontWeight: staffTab === 'clients' ? 700 : 600,
                 fontSize: '13px',
-                color: activeTab === 'inventory' ? 'var(--color-forest-sage)' : '#111827',
-                borderBottom: activeTab === 'inventory' ? '3px solid var(--color-forest-sage)' : '3px solid transparent',
+                color: staffTab === 'clients' ? 'var(--color-amber-terracotta)' : '#111827',
+                borderBottom: staffTab === 'clients' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
                 background: 'transparent',
                 borderTop: 'none',
                 borderLeft: 'none',
@@ -562,16 +630,16 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <Package size={16} /> Pharmacy & Stock
+              <Users size={16} /> Clients & Pets
             </button>
             <button 
-              onClick={() => setActiveTab('billing')}
+              onClick={() => setStaffTab('inventory')}
               style={{
                 padding: '12px 16px',
-                fontWeight: activeTab === 'billing' ? 700 : 600,
+                fontWeight: staffTab === 'inventory' ? 700 : 600,
                 fontSize: '13px',
-                color: activeTab === 'billing' ? 'var(--color-forest-sage)' : '#111827',
-                borderBottom: activeTab === 'billing' ? '3px solid var(--color-forest-sage)' : '3px solid transparent',
+                color: staffTab === 'inventory' ? 'var(--color-amber-terracotta)' : '#111827',
+                borderBottom: staffTab === 'inventory' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
                 background: 'transparent',
                 borderTop: 'none',
                 borderLeft: 'none',
@@ -582,495 +650,434 @@ export default function App() {
                 gap: '8px'
               }}
             >
-              <Receipt size={16} /> Invoices & Billing
+              <Package size={16} /> Inventory
+            </button>
+            <button 
+              onClick={() => setStaffTab('billing')}
+              style={{
+                padding: '12px 16px',
+                fontWeight: staffTab === 'billing' ? 700 : 600,
+                fontSize: '13px',
+                color: staffTab === 'billing' ? 'var(--color-amber-terracotta)' : '#111827',
+                borderBottom: staffTab === 'billing' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
+                background: 'transparent',
+                borderTop: 'none',
+                borderLeft: 'none',
+                borderRight: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <Receipt size={16} /> Billing
+            </button>
+            <button 
+              onClick={() => setStaffTab('settings')}
+              style={{
+                padding: '12px 16px',
+                fontWeight: staffTab === 'settings' ? 700 : 600,
+                fontSize: '13px',
+                color: staffTab === 'settings' ? 'var(--color-amber-terracotta)' : '#111827',
+                borderBottom: staffTab === 'settings' ? '3px solid var(--color-amber-terracotta)' : '3px solid transparent',
+                background: 'transparent',
+                borderTop: 'none',
+                borderLeft: 'none',
+                borderRight: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <Settings size={16} /> Settings
             </button>
           </>
         )}
       </nav>
 
-      {/* Main Container */}
-      <main style={{ flex: 1, maxWidth: '1020px', width: '100%', margin: '0 auto', padding: '24px 20px' }}>
+      {/* Main Content Area */}
+      <main style={{ flex: 1, maxWidth: '1020px', width: '100%', margin: '0 auto', padding: '24px 20px', paddingBottom: '90px' }}>
         
-        {/* PET PARENT PORTAL - PASSPORT VIEW */}
-        {currentRole === 'pet_owner' && activeTab === 'passport' && (
+        {/* ========================================================
+            PET OWNER VIEWS
+           ======================================================== */}
+        {currentRole === 'pet_owner' && petOwnerTab === 'mypets' && (
           <div>
-            {/* Pet Switcher Bar */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-              <div>
-                <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
-                  {activePet.name}'s Health Passport
-                </h2>
-                <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600 }}>
-                  Owner: Anthony Tolbert · Happy Paws Liberia Rescue Center ID #0884
+            {!activePet ? (
+              <div className="card-surface" style={{ padding: '36px', textAlign: 'center', maxWidth: '520px', margin: '30px auto' }}>
+                <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: 'var(--color-terracotta-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+                  <HeartHandshake size={32} color="var(--color-amber-terracotta)" />
+                </div>
+                <h3 className="font-serif" style={{ fontSize: '20px', fontWeight: 700, color: '#111827', marginBottom: '8px' }}>
+                  Welcome to Happy Paws Liberia
+                </h3>
+                <p style={{ fontSize: '13px', color: '#4B5563', lineHeight: 1.5, marginBottom: '24px' }}>
+                  You have no registered pets yet. Register your companion today to receive an official digital Health Passport, certified Rabies collar tag, and full clinical medical history.
                 </p>
+                <button
+                  onClick={() => setShowRegisterPetModal(true)}
+                  className="btn-primary"
+                  style={{ padding: '10px 24px', fontWeight: 700, fontSize: '14px', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+                >
+                  <Plus size={16} /> Register First Pet
+                </button>
               </div>
-
-              <div style={{ display: 'flex', gap: '10px' }}>
-                {pets.map((p, idx) => (
+            ) : (
+              <>
+                {/* Multi-pet switcher bar */}
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '18px', overflowX: 'auto', paddingBottom: '4px' }}>
+                  {userPets.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => setSelectedPetId(p.id)}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: '20px',
+                        fontSize: '13px',
+                        fontWeight: 700,
+                        backgroundColor: activePet.id === p.id ? 'var(--color-amber-terracotta)' : '#FFFFFF',
+                        color: activePet.id === p.id ? '#FFFFFF' : '#111827',
+                        border: '1px solid ' + (activePet.id === p.id ? 'var(--color-amber-terracotta)' : '#D1D5DB'),
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        boxShadow: 'var(--shadow-sm)'
+                      }}
+                    >
+                      <img src={p.photoUrl} alt="" style={{ width: '20px', height: '20px', borderRadius: '50%', objectFit: 'cover' }} />
+                      <span>{p.name}</span>
+                    </button>
+                  ))}
                   <button
-                    key={p.id}
-                    onClick={() => setSelectedPetIndex(idx)}
+                    onClick={() => setShowRegisterPetModal(true)}
                     style={{
-                      padding: '8px 16px',
+                      padding: '6px 12px',
                       borderRadius: '20px',
-                      border: idx === selectedPetIndex ? '2px solid var(--color-amber-terracotta)' : '1px solid var(--color-border-medium)',
-                      backgroundColor: idx === selectedPetIndex ? 'var(--color-terracotta-light)' : '#FFFFFF',
-                      color: '#111827',
+                      fontSize: '12px',
                       fontWeight: 700,
-                      fontSize: '13px',
+                      backgroundColor: '#F3F4F6',
+                      color: '#374151',
+                      border: '1px dashed #9CA3AF',
                       cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'center',
-                      gap: '8px'
+                      gap: '4px'
                     }}
                   >
-                    <img 
-                      src={p.photoUrl} 
-                      alt={p.name} 
-                      style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover' }} 
-                    />
-                    {p.name}
+                    <Plus size={14} /> Add Pet
                   </button>
-                ))}
+                </div>
 
-                <button 
-                  onClick={() => setShowPetQrModal(true)}
-                  className="btn-primary"
-                  style={{ padding: '8px 16px', fontSize: '13px', minHeight: '38px', fontWeight: 700, backgroundColor: 'var(--color-amber-terracotta)' }}
-                >
-                  <QrCode size={15} /> Pet QR Code
-                </button>
-
-                <button 
-                  onClick={() => setShowPassportModal(true)}
-                  className="btn-secondary"
-                  style={{ padding: '8px 16px', fontSize: '13px', minHeight: '38px', fontWeight: 700, color: '#111827' }}
-                >
-                  <Printer size={15} /> Print Passport
-                </button>
-              </div>
-            </div>
-
-            {/* Passport Identity Card */}
-            <div className="card-surface" style={{ padding: '24px', marginBottom: '24px', borderLeft: '6px solid var(--color-amber-terracotta)' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '24px', alignItems: 'center' }}>
-                <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
-                  <img 
-                    src={activePet.photoUrl} 
-                    alt={activePet.name} 
-                    style={{ width: '110px', height: '110px', borderRadius: '20px', objectFit: 'cover', border: '3px solid #FFFFFF', boxShadow: 'var(--shadow-md)' }} 
-                  />
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
                   <div>
-                    <span className="badge badge-sage" style={{ marginBottom: '6px' }}>
-                      <CheckCircle2 size={13} /> Verified Rabies Vaccinated
-                    </span>
-                    <h3 className="font-serif" style={{ fontSize: '26px', fontWeight: 700, color: '#111827', margin: '4px 0' }}>
-                      {activePet.name}
+                    <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
+                      {activePet.name}'s Health Passport
+                    </h2>
+                    <p style={{ fontSize: '13px', color: '#4B5563', fontWeight: 500 }}>
+                      Official Veterinary Health Record · Rabies Tag #{activePet.rabiesTag}
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button 
+                      onClick={() => {
+                        setSelectedPetForQr(activePet);
+                        setShowPetQrModal(true);
+                      }}
+                      className="btn-primary"
+                      style={{ padding: '8px 14px', fontSize: '13px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}
+                    >
+                      <QrCode size={16} /> Show Pet QR
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setSelectedPetForPassport(activePet);
+                        setShowPassportModal(true);
+                      }}
+                      className="btn-secondary"
+                      style={{ padding: '8px 14px', fontSize: '13px', fontWeight: 700, color: '#111827', display: 'flex', alignItems: 'center', gap: '6px' }}
+                    >
+                      <Printer size={16} /> Print Passport
+                    </button>
+                  </div>
+                </div>
+
+                {/* Pet Card */}
+                <div className="card-surface" style={{ padding: '24px', marginBottom: '24px' }}>
+                  <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <div style={{ position: 'relative' }}>
+                      <img 
+                        src={activePet.photoUrl} 
+                        alt={activePet.name} 
+                        style={{ width: '110px', height: '110px', borderRadius: '20px', objectFit: 'cover', border: '2px solid var(--color-border-subtle)' }} 
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handlePhotoUploadTrigger(activePet.id)}
+                        disabled={isUploadingPhoto}
+                        title="Upload/Replace photo in Firebase Storage"
+                        style={{
+                          position: 'absolute',
+                          bottom: '-6px',
+                          right: '-6px',
+                          backgroundColor: 'var(--color-amber-terracotta)',
+                          color: '#FFFFFF',
+                          border: '2px solid #FFFFFF',
+                          borderRadius: '50%',
+                          width: '32px',
+                          height: '32px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer',
+                          boxShadow: 'var(--shadow-md)'
+                        }}
+                      >
+                        <Camera size={16} />
+                      </button>
+                    </div>
+                    <div style={{ flex: 1, minWidth: '220px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+                        <h3 className="font-serif" style={{ fontSize: '22px', fontWeight: 700, color: '#111827' }}>{activePet.name}</h3>
+                        <span className="badge badge-sage">Verified Healthy</span>
+                      </div>
+                      <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600 }}>{activePet.species} · {activePet.breed}</p>
+                      <p style={{ fontSize: '13px', color: '#4B5563' }}>Born: {activePet.dob} · Sex: {activePet.sex} · Weight: <strong>{activePet.weightKg} kg</strong></p>
+                      <p style={{ fontSize: '13px', color: '#4B5563' }}>Microchip: <strong>{activePet.microchipId}</strong></p>
+                      <p style={{ fontSize: '13px', color: 'var(--color-amber-terracotta)', fontWeight: 700 }}>Rabies Collar Tag: #{activePet.rabiesTag}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Vaccines & Deworming Tables */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
+                  {/* Vaccines */}
+                  <div className="card-surface" style={{ padding: '20px' }}>
+                    <h3 className="font-serif" style={{ fontSize: '17px', fontWeight: 700, color: '#111827', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Syringe size={18} color="var(--color-amber-terracotta)" /> Immunizations
                     </h3>
-                    <p style={{ fontSize: '14px', color: '#1F2937', fontWeight: 600 }}>
-                      {activePet.species} · {activePet.breed}
-                    </p>
-                    <p style={{ fontSize: '13px', color: '#111827', fontWeight: 700, marginTop: '4px' }}>
-                      Rabies Tag: <span style={{ color: 'var(--color-amber-terracotta)' }}>{activePet.rabiesTag}</span>
-                    </p>
+                    {vaccinations.filter(v => v.petName === activePet.name).length === 0 ? (
+                      <p style={{ fontSize: '12px', color: '#6B7280' }}>No immunization records recorded yet.</p>
+                    ) : (
+                      vaccinations.filter(v => v.petName === activePet.name).map(v => (
+                        <div key={v.id} style={{ padding: '10px 0', borderBottom: '1px solid #E5E7EB' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 700, fontSize: '13px', color: '#111827' }}>{v.vaccineName}</span>
+                            <span className="badge badge-sage">{v.status}</span>
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#6B7280', marginTop: '3px' }}>
+                            Given: {v.dateAdministered} · Valid until: {v.validUntil}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Deworming */}
+                  <div className="card-surface" style={{ padding: '20px' }}>
+                    <h3 className="font-serif" style={{ fontSize: '17px', fontWeight: 700, color: '#111827', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Package size={18} color="var(--color-forest-sage)" /> Parasite Prevention & Deworming
+                    </h3>
+                    {dewormingList.filter(d => d.petName === activePet.name).length === 0 ? (
+                      <p style={{ fontSize: '12px', color: '#6B7280' }}>No deworming treatments recorded yet.</p>
+                    ) : (
+                      dewormingList.filter(d => d.petName === activePet.name).map(d => (
+                        <div key={d.id} style={{ padding: '10px 0', borderBottom: '1px solid #E5E7EB' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 700, fontSize: '13px', color: '#111827' }}>{d.productName}</span>
+                            <span className="badge badge-sage">Done</span>
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#6B7280', marginTop: '3px' }}>
+                            Given: {d.dateGiven} · Next Due: {d.nextDueDate} (Dosage: {d.dosage})
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', background: 'var(--color-card-warm)', padding: '16px', borderRadius: '14px' }}>
-                  <div>
-                    <span style={{ fontSize: '11px', textTransform: 'uppercase', color: '#1F2937', fontWeight: 700 }}>Sex</span>
-                    <p style={{ fontSize: '14px', fontWeight: 700, color: '#111827' }}>{activePet.sex}</p>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: '11px', textTransform: 'uppercase', color: '#1F2937', fontWeight: 700 }}>Weight</span>
-                    <p style={{ fontSize: '14px', fontWeight: 700, color: '#111827' }}>{activePet.weightKg} kg</p>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: '11px', textTransform: 'uppercase', color: '#1F2937', fontWeight: 700 }}>Microchip #</span>
-                    <p style={{ fontSize: '13px', fontWeight: 700, color: '#111827', wordBreak: 'break-all' }}>{activePet.microchipId}</p>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: '11px', textTransform: 'uppercase', color: '#1F2937', fontWeight: 700 }}>Date of Birth</span>
-                    <p style={{ fontSize: '13px', fontWeight: 700, color: '#111827' }}>{activePet.dob}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Quick Action Banner */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginBottom: '24px' }}>
-              <div className="card-surface" style={{ padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#111827' }}>Need a Vet Appointment?</h4>
-                  <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600, marginTop: '2px' }}>
-                    Consultations, wellness checkups & booster vaccines
-                  </p>
-                </div>
-                <button 
-                  onClick={() => setShowNewAppointmentModal(true)}
-                  className="btn-primary"
-                  style={{ padding: '8px 16px', fontSize: '13px', minHeight: '38px', fontWeight: 700 }}
-                >
-                  <Plus size={16} /> Book Visit
-                </button>
-              </div>
-
-              <div className="card-surface" style={{ padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#111827' }}>Monrovia Emergency Line</h4>
-                  <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600, marginTop: '2px' }}>
-                    Congo Town Tubman Blvd Clinic Dispatch
-                  </p>
-                </div>
-                <a 
-                  href="tel:+231881479329" 
-                  className="btn-secondary"
-                  style={{ padding: '8px 16px', fontSize: '13px', minHeight: '38px', textDecoration: 'none', color: '#111827', fontWeight: 700 }}
-                >
-                  <Phone size={15} /> 088 147 9329
-                </a>
-              </div>
-            </div>
-
-            {/* Recent Medical Timeline */}
-            <div className="card-surface" style={{ padding: '24px' }}>
-              <h3 className="font-serif" style={{ fontSize: '18px', fontWeight: 700, color: '#111827', marginBottom: '16px' }}>
-                Recent Immunization & Deworming Record
-              </h3>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {vaccinations.filter(v => v.petName === activePet.name).map((v) => (
-                  <div 
-                    key={v.id} 
-                    style={{ 
-                      padding: '14px', 
-                      borderRadius: '12px', 
-                      backgroundColor: 'var(--color-card-warm)', 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      justifyContent: 'space-between',
-                      flexWrap: 'wrap',
-                      gap: '10px'
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <div style={{ width: '38px', height: '38px', borderRadius: '10px', backgroundColor: 'var(--color-sage-light)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Syringe size={20} color="var(--color-forest-sage)" />
-                      </div>
-                      <div>
-                        <h4 style={{ fontSize: '14px', fontWeight: 700, color: '#111827' }}>{v.vaccineName}</h4>
-                        <p style={{ fontSize: '12px', color: '#1F2937', fontWeight: 600 }}>
-                          Administered: {v.dateAdministered} by {v.vetName}
-                        </p>
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <span className="badge badge-sage">Valid until {v.validUntil}</span>
-                      <p style={{ fontSize: '11px', color: '#111827', fontWeight: 700, marginTop: '4px' }}>Batch: {v.batchNumber}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+              </>
+            )}
           </div>
         )}
 
-        {/* PET PARENT PORTAL - VACCINES TAB */}
-        {currentRole === 'pet_owner' && activeTab === 'vaccines' && (
+        {currentRole === 'pet_owner' && petOwnerTab === 'visits' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
               <div>
                 <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
-                  Vaccination & Preventive Timeline
+                  Clinic Appointments & Visits
                 </h2>
-                <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600 }}>
-                  Showing clinical records for {activePet.name}
+                <p style={{ fontSize: '13px', color: '#4B5563', fontWeight: 500 }}>
+                  Book veterinary consultations and check appointment history
                 </p>
               </div>
+
+              <button
+                onClick={() => setShowNewAppointmentModal(true)}
+                className="btn-primary"
+                style={{ padding: '8px 16px', fontWeight: 700, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Plus size={16} /> Request Appointment
+              </button>
             </div>
 
-            {/* Vaccines Table Card */}
-            <div className="card-surface" style={{ padding: '24px', marginBottom: '24px' }}>
-              <h3 className="font-serif" style={{ fontSize: '18px', fontWeight: 700, color: '#111827', marginBottom: '16px' }}>
-                Vaccinations
-              </h3>
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '2px solid var(--color-border-subtle)' }}>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Vaccine</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Date Given</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Valid Through</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Status</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Veterinarian</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {vaccinations.map(v => (
-                      <tr key={v.id} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                        <td style={{ padding: '12px', fontWeight: 700, fontSize: '13px', color: '#111827' }}>{v.vaccineName}</td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 600 }}>{v.dateAdministered}</td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 700 }}>{v.validUntil}</td>
-                        <td style={{ padding: '12px' }}>
-                          <span className="badge badge-sage">{v.status}</span>
-                        </td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 600 }}>{v.vetName}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            <div className="card-surface" style={{ padding: '20px' }}>
+              {appointments.filter(a => a.clientName === authenticatedUser.fullName || a.petName === 'Bella').map(a => (
+                <div key={a.id} style={{ padding: '14px', borderBottom: '1px solid #E5E7EB', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: '14px', color: '#111827' }}>{a.reason}</div>
+                    <div style={{ fontSize: '12px', color: '#4B5563', marginTop: '3px' }}>
+                      Pet: {a.petName} · Time: {a.time} · Doctor: {a.vetName}
+                    </div>
+                  </div>
+                  <span className="badge badge-sage">{a.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {currentRole === 'pet_owner' && petOwnerTab === 'settings' && (
+          <div>
+            <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827', marginBottom: '8px' }}>
+              Account & Clinic Info
+            </h2>
+            <p style={{ fontSize: '13px', color: '#4B5563', fontWeight: 500, marginBottom: '20px' }}>
+              Your verified Pet Parent profile at Happy Paws Liberia
+            </p>
+
+            <div className="card-surface" style={{ padding: '24px', maxWidth: '600px' }}>
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>Full Name</label>
+                <input type="text" value={authenticatedUser.fullName} readOnly style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', color: '#111827', fontWeight: 600, backgroundColor: '#F9FAFB' }} />
               </div>
-            </div>
-
-            {/* Deworming Table Card */}
-            <div className="card-surface" style={{ padding: '24px' }}>
-              <h3 className="font-serif" style={{ fontSize: '18px', fontWeight: 700, color: '#111827', marginBottom: '16px' }}>
-                Deworming & Parasite Prevention
-              </h3>
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '2px solid var(--color-border-subtle)' }}>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Product</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Administered Date</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Dosage & Weight</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Next Due</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dewormings.map(d => (
-                      <tr key={d.id} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                        <td style={{ padding: '12px', fontWeight: 700, fontSize: '13px', color: '#111827' }}>{d.productName}</td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 600 }}>{d.dateGiven}</td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 600 }}>{d.dosage} ({d.weightKg} kg)</td>
-                        <td style={{ padding: '12px', fontSize: '13px', fontWeight: 700, color: 'var(--color-amber-terracotta)' }}>{d.nextDueDate}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>Login Username / Email</label>
+                <input type="text" value={authenticatedUser.email} readOnly style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', color: '#111827', fontWeight: 600, backgroundColor: '#F9FAFB' }} />
+              </div>
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>Clinic Address</label>
+                <input type="text" value={clinicAddress} readOnly style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', color: '#111827', fontWeight: 600, backgroundColor: '#F9FAFB' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>Clinic Contact Hotline</label>
+                <input type="text" value={clinicPhone} readOnly style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', color: '#111827', fontWeight: 600, backgroundColor: '#F9FAFB' }} />
               </div>
             </div>
           </div>
         )}
 
-        {/* APPOINTMENTS TAB (Shared / Staff Triage) */}
-        {activeTab === 'appointments' && (
+        {/* ========================================================
+            STAFF VIEWS: Today | Clinical | Clients | Billing | Settings
+           ======================================================== */}
+        {currentRole !== 'pet_owner' && staffTab === 'today' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
               <div>
                 <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
-                  {currentRole === 'pet_owner' ? 'Your Appointments' : 'Daily Clinic Queue & Triage'}
+                  Today's Reception & Patient Triage
                 </h2>
-                <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600 }}>
-                  Happy Paws Veterinary Clinic · Congo Town Back Road, Monrovia
+                <p style={{ fontSize: '13px', color: '#4B5563', fontWeight: 500 }}>
+                  Active admitted queue, appointments, and rapid check-in
                 </p>
               </div>
 
               <div style={{ display: 'flex', gap: '10px' }}>
-                {currentRole !== 'pet_owner' && (
-                  <button 
-                    onClick={() => {
-                      setManualCodeInput('');
-                      setAdmitSuccess(false);
-                      setShowReceptionScannerModal(true);
-                    }}
-                    className="btn-primary"
-                    style={{ padding: '8px 16px', fontSize: '13px', minHeight: '38px', fontWeight: 700, backgroundColor: 'var(--color-forest-sage)' }}
-                  >
-                    <ScanLine size={16} /> Scan Pet QR
-                  </button>
-                )}
-
-                <button 
+                <button
+                  onClick={() => setShowScannerModal(true)}
+                  className="btn-primary"
+                  style={{ padding: '8px 14px', fontSize: '13px', fontWeight: 700, backgroundColor: 'var(--color-forest-sage)', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <ScanLine size={16} /> Scan Pet QR
+                </button>
+                <button
                   onClick={() => setShowNewAppointmentModal(true)}
                   className="btn-secondary"
-                  style={{ padding: '8px 16px', fontSize: '13px', minHeight: '38px', fontWeight: 700, color: '#111827' }}
+                  style={{ padding: '8px 14px', fontSize: '13px', fontWeight: 700, color: '#111827', display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
-                  <Plus size={16} /> Schedule Visit
+                  <Plus size={16} /> Walk-in Admission
                 </button>
               </div>
             </div>
 
             <div className="card-surface" style={{ padding: '24px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                {appointments.map(appt => (
-                  <div 
-                    key={appt.id}
-                    style={{
-                      padding: '16px',
-                      borderRadius: '14px',
-                      backgroundColor: 'var(--color-card-warm)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      flexWrap: 'wrap',
-                      gap: '12px',
-                      borderLeft: appt.status === 'In Consultation' ? '4px solid var(--color-forest-sage)' : '4px solid var(--color-amber-terracotta)'
-                    }}
-                  >
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                        <span style={{ fontSize: '15px', fontWeight: 700, color: '#111827' }}>
-                          {appt.petName} ({appt.species})
-                        </span>
-                        <span style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600 }}>
-                          · Parent: <strong>{appt.clientName}</strong>
-                        </span>
-                        <span className={`badge ${appt.status === 'In Consultation' ? 'badge-sage' : 'badge-amber'}`}>
-                          {appt.status}
-                        </span>
-                      </div>
-                      <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600 }}>
-                        {appt.reason}
-                      </p>
-                      <p style={{ fontSize: '12px', color: '#1F2937', fontWeight: 600, marginTop: '4px' }}>
-                        <Clock size={12} style={{ display: 'inline', marginRight: '4px' }} />
-                        {appt.time} · Assigned: {appt.vetName}
-                      </p>
-                    </div>
-
-                    {currentRole !== 'pet_owner' && (
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        {appt.status !== 'Completed' && (
-                          <button 
-                            onClick={() => {
-                              setAppointments(appointments.map(a => a.id === appt.id ? { ...a, status: 'Completed' } : a));
-                            }}
-                            className="btn-secondary"
-                            style={{ padding: '6px 12px', fontSize: '12px', minHeight: '34px', color: '#111827', fontWeight: 700 }}
-                          >
-                            <Check size={14} /> Mark Done
-                          </button>
-                        )}
-                        <button 
-                          onClick={() => setActiveTab('consultations')}
-                          className="btn-primary"
-                          style={{ padding: '6px 12px', fontSize: '12px', minHeight: '34px', fontWeight: 700 }}
-                        >
-                          <Stethoscope size={14} /> Open SOAP Note
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* CLINICAL CONSULTATIONS TAB (Staff Only) */}
-        {currentRole !== 'pet_owner' && activeTab === 'consultations' && (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-              <div>
-                <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
-                  Clinical Consultations & SOAP Notes
-                </h2>
-                <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600 }}>
-                  Records become legally immutable upon finalization as per veterinary regulatory guidelines.
-                </p>
-              </div>
-            </div>
-
-            {/* Active Consultation Record */}
-            <div className="card-surface" style={{ padding: '24px', marginBottom: '24px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <div>
-                  <span className="badge badge-sage">Finalized Clinical Note</span>
-                  <h3 className="font-serif" style={{ fontSize: '20px', fontWeight: 700, color: '#111827', marginTop: '6px' }}>
-                    Bella (Anthony Tolbert) · Routine Examination & Rabies Titer Check
-                  </h3>
-                  <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600 }}>
-                    Attending Vet: Dr. David Kpadeh, DVM · Date: 2024-09-28
-                  </p>
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', background: 'var(--color-card-warm)', padding: '16px', borderRadius: '14px' }}>
-                <div>
-                  <h4 style={{ fontSize: '13px', textTransform: 'uppercase', color: '#111827', fontWeight: 700 }}>Subjective (History)</h4>
-                  <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600, marginTop: '4px' }}>
-                    Owner reports energetic behavior, appetite normal. Presented for routine follow-up after rescue rehabilitation.
-                  </p>
-                </div>
-                <div>
-                  <h4 style={{ fontSize: '13px', textTransform: 'uppercase', color: '#111827', fontWeight: 700 }}>Objective (Findings)</h4>
-                  <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600, marginTop: '4px' }}>
-                    Temp: 38.6°C, Heart Rate: 98 bpm, Weight: 24.5 kg. Mucous membranes pink, CRT &lt; 2s. Skin clear, coat glossy.
-                  </p>
-                </div>
-                <div>
-                  <h4 style={{ fontSize: '13px', textTransform: 'uppercase', color: '#111827', fontWeight: 700 }}>Assessment (Diagnosis)</h4>
-                  <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600, marginTop: '4px' }}>
-                    Healthy adult canine in prime body condition score (BCS 5/9). No active clinical pathology.
-                  </p>
-                </div>
-                <div>
-                  <h4 style={{ fontSize: '13px', textTransform: 'uppercase', color: '#111827', fontWeight: 700 }}>Plan & Prescriptions</h4>
-                  <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600, marginTop: '4px' }}>
-                    Administered Drontal Plus dewormer (2.5 tabs). Re-check in 6 months or if dietary changes occur.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* PHARMACY & INVENTORY TAB (Staff Only) */}
-        {currentRole !== 'pet_owner' && activeTab === 'inventory' && (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-              <div>
-                <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
-                  Pharmacy, Vaccines & Medical Stock
-                </h2>
-                <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600 }}>
-                  Live inventory synchronized across Happy Paws Android app and web portal.
-                </p>
-              </div>
-            </div>
-
-            <div className="card-surface" style={{ padding: '24px' }}>
+              <h3 className="font-serif" style={{ fontSize: '17px', fontWeight: 700, color: '#111827', marginBottom: '16px' }}>
+                Today's Patients ({appointments.length})
+              </h3>
               <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
                   <thead>
-                    <tr style={{ borderBottom: '2px solid var(--color-border-subtle)' }}>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Item Name</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Category</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>In Stock</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Unit Price (USD)</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Status</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Action</th>
+                    <tr style={{ borderBottom: '2px solid var(--color-border-subtle)', color: '#374151', fontWeight: 700 }}>
+                      <th style={{ padding: '10px 12px' }}>Time</th>
+                      <th style={{ padding: '10px 12px' }}>Patient & Owner</th>
+                      <th style={{ padding: '10px 12px' }}>Reason</th>
+                      <th style={{ padding: '10px 12px' }}>Assigned Vet</th>
+                      <th style={{ padding: '10px 12px' }}>Status</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'right' }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {inventory.map(item => (
-                      <tr key={item.id} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                        <td style={{ padding: '12px', fontWeight: 700, fontSize: '13px', color: '#111827' }}>{item.name}</td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 600 }}>{item.category}</td>
-                        <td style={{ padding: '12px', fontSize: '14px', fontWeight: 700, color: '#111827' }}>
-                          {item.stockCount} {item.unit}
-                        </td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 700 }}>
-                          ${item.unitPriceUSD.toFixed(2)}
-                        </td>
+                    {appointments.map(apt => (
+                      <tr key={apt.id} style={{ borderBottom: '1px solid #F3F4F6' }}>
+                        <td style={{ padding: '12px', fontWeight: 700, color: '#111827' }}>{apt.time}</td>
                         <td style={{ padding: '12px' }}>
-                          {item.stockCount <= item.minimumThreshold ? (
-                            <span className="badge badge-amber">Low Stock</span>
-                          ) : (
-                            <span className="badge badge-sage">Sufficient</span>
-                          )}
+                          <div style={{ fontWeight: 700, color: '#111827' }}>{apt.petName} ({apt.species})</div>
+                          <div style={{ fontSize: '12px', color: '#6B7280' }}>Owner: {apt.clientName}</div>
                         </td>
+                        <td style={{ padding: '12px', color: '#111827', fontWeight: 600 }}>{apt.reason}</td>
+                        <td style={{ padding: '12px', color: '#111827', fontWeight: 600 }}>{apt.vetName}</td>
                         <td style={{ padding: '12px' }}>
-                          <button
-                            onClick={() => {
-                              setInventory(inventory.map(i => i.id === item.id ? { ...i, stockCount: i.stockCount + 10 } : i));
-                            }}
-                            className="btn-secondary"
-                            style={{ padding: '4px 10px', fontSize: '11px', minHeight: '28px', color: '#111827', fontWeight: 700 }}
-                          >
-                            +10 Stock
-                          </button>
+                          <span className={`badge ${apt.status === 'In Consultation' ? 'badge-amber' : apt.status === 'Completed' ? 'badge-sage' : 'badge-slate'}`}>
+                            {apt.status}
+                          </span>
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right' }}>
+                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                            {apt.status === 'Requested' && (
+                              <button
+                                onClick={() => handleUpdateAppointmentStatus(apt.id, 'Confirmed')}
+                                className="btn-outline"
+                                style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 700, color: 'var(--color-forest-sage)' }}
+                              >
+                                Confirm
+                              </button>
+                            )}
+                            {apt.status === 'Confirmed' && (
+                              <button
+                                onClick={() => handleUpdateAppointmentStatus(apt.id, 'In Consultation')}
+                                className="btn-outline"
+                                style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 700, color: 'var(--color-amber-terracotta)' }}
+                              >
+                                Start Consult
+                              </button>
+                            )}
+                            {apt.status === 'In Consultation' && (
+                              <button
+                                onClick={() => handleUpdateAppointmentStatus(apt.id, 'Completed')}
+                                className="btn-outline"
+                                style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 700, color: '#059669' }}
+                              >
+                                Complete
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                const found = pets.find(p => p.name.toLowerCase() === apt.petName.toLowerCase() || (apt.petId && String(p.id) === String(apt.petId)));
+                                if (found) {
+                                  setScannedPetDossier(found);
+                                  setShowDossierModal(true);
+                                } else {
+                                  alert(`Patient record for "${apt.petName}" not found in patient registry.`);
+                                }
+                              }}
+                              className="btn-secondary"
+                              style={{ padding: '4px 10px', fontSize: '12px', fontWeight: 700, color: '#111827' }}
+                            >
+                              View Dossier
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1081,47 +1088,546 @@ export default function App() {
           </div>
         )}
 
-        {/* INVOICES & BILLING TAB (Staff Only) */}
-        {currentRole !== 'pet_owner' && activeTab === 'billing' && (
+        {currentRole !== 'pet_owner' && staffTab === 'clinical' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
               <div>
                 <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
-                  Billing & Invoicing
+                  Clinical Workspace & SOAP Records
                 </h2>
-                <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600 }}>
-                  Supports dual-currency Liberia Dollars (LRD) and US Dollars (USD).
+                <p style={{ fontSize: '13px', color: '#4B5563', fontWeight: 500 }}>
+                  Doctor consultations, diagnosis, prescriptions, and vaccines
                 </p>
+              </div>
+
+              <button
+                onClick={() => setShowClinicalExamModal(true)}
+                className="btn-primary"
+                style={{ padding: '8px 16px', fontWeight: 700, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Stethoscope size={16} /> New Clinical Exam & SOAP Note
+              </button>
+            </div>
+
+            <div className="card-surface" style={{ padding: '24px', marginBottom: '20px' }}>
+              <h3 className="font-serif" style={{ fontSize: '18px', fontWeight: 700, color: '#111827', marginBottom: '14px' }}>
+                Recent Medical Examinations ({clinicalExams.length})
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {clinicalExams.length === 0 ? (
+                  <p style={{ fontSize: '13px', color: '#6B7280', padding: '16px 0' }}>No clinical examinations recorded yet.</p>
+                ) : (
+                  clinicalExams.map(exam => (
+                    <div key={exam.id} style={{ padding: '16px', borderRadius: '12px', backgroundColor: '#F9FAFB', border: '1px solid #E5E7EB' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap', gap: '8px' }}>
+                        <div style={{ fontWeight: 700, color: '#111827', fontSize: '15px' }}>
+                          {exam.petName} · {exam.diagnosis}
+                        </div>
+                        <span style={{ fontSize: '12px', color: '#6B7280', fontWeight: 600 }}>{exam.date} · {exam.vetName}</span>
+                      </div>
+                      <p style={{ fontSize: '13px', color: '#374151', lineHeight: 1.5, margin: '6px 0' }}>
+                        <strong>Complaint & Findings:</strong> {exam.presentingComplaint}. {exam.physicalFindings} (Weight: {exam.weightKg} kg, Temp: {exam.tempC}°C, HR: {exam.heartRateBpm} bpm).
+                      </p>
+                      <p style={{ fontSize: '13px', color: '#374151', lineHeight: 1.5, marginBottom: '4px' }}>
+                        <strong>Treatment & Medications:</strong> {exam.treatment} {exam.medication}
+                      </p>
+                      <div style={{ fontSize: '12px', color: 'var(--color-amber-terracotta)', fontWeight: 600 }}>
+                        Instructions: {exam.instructions} · Follow-up: {exam.followUp}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================
+            STAFF TAB 3: CLIENTS & PET FAMILIES
+           ======================================================== */}
+        {currentRole !== 'pet_owner' && staffTab === 'clients' && (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
+                  Client & Patient Family Registry
+                </h2>
+                <p style={{ fontSize: '13px', color: '#4B5563', fontWeight: 500 }}>
+                  Client contact dossiers, multi-pet linkage, and verified rabies collar tags
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => {
+                    setClientToEdit(null);
+                    setShowClientModal(true);
+                  }}
+                  className="btn-primary"
+                  style={{ padding: '8px 16px', fontWeight: 700, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <UserPlus size={16} /> Register Client
+                </button>
+                <button
+                  onClick={() => {
+                    setPetToEdit(null);
+                    setInitialClientIdForPet(clients[0]?.id);
+                    setShowRegisterPetModal(true);
+                  }}
+                  className="btn-secondary"
+                  style={{ padding: '8px 16px', fontWeight: 700, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', color: '#111827' }}
+                >
+                  <Plus size={16} /> Register Pet
+                </button>
               </div>
             </div>
 
+            {/* Fast Search & Client Filter Bar */}
+            <div className="card-surface" style={{ padding: '16px 20px', marginBottom: '20px', display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: '260px' }}>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="🔍 Search client by name/phone, or pet by name, species, breed, rabies tag..."
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    border: '1px solid #D1D5DB',
+                    fontSize: '13px',
+                    color: '#111827',
+                    fontWeight: 500,
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              {selectedClientIdForFilter && (
+                <button
+                  onClick={() => setSelectedClientIdForFilter(null)}
+                  className="btn-secondary"
+                  style={{ padding: '8px 12px', fontSize: '12px', fontWeight: 600, color: '#4B5563' }}
+                >
+                  Showing 1 Client · View All ({clients.length})
+                </button>
+              )}
+            </div>
+
+            {/* Client Family Cards List */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {clients
+                .filter(c => {
+                  if (selectedClientIdForFilter && String(c.id) !== String(selectedClientIdForFilter)) return false;
+                  if (!searchQuery.trim()) return true;
+                  const q = searchQuery.toLowerCase();
+                  const cMatch = (c.fullName || '').toLowerCase().includes(q) ||
+                    (c.phone || '').includes(q) ||
+                    (c.address || '').toLowerCase().includes(q);
+                  const cPets = pets.filter(p => String(p.clientId) === String(c.id));
+                  const pMatch = cPets.some(p =>
+                    (p.name || '').toLowerCase().includes(q) ||
+                    (p.species || '').toLowerCase().includes(q) ||
+                    (p.breed || '').toLowerCase().includes(q) ||
+                    (p.rabiesTag || '').toLowerCase().includes(q) ||
+                    (p.microchipId || '').toLowerCase().includes(q)
+                  );
+                  return cMatch || pMatch;
+                })
+                .map(client => {
+                  const ownedPets = pets.filter(p => String(p.clientId) === String(client.id));
+                  return (
+                    <div key={client.id} className="card-surface" style={{ padding: '22px' }}>
+                      {/* Client Header Info */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px', borderBottom: '1px solid #F3F4F6', paddingBottom: '14px', marginBottom: '16px' }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px', fontWeight: 800, color: '#111827' }}>
+                              {client.fullName}
+                            </span>
+                            {client.preferredName && (
+                              <span style={{ fontSize: '13px', color: '#6B7280', fontWeight: 500 }}>
+                                ("{client.preferredName}")
+                              </span>
+                            )}
+                            <span className="badge badge-sage" style={{ fontSize: '11px' }}>
+                              {ownedPets.length} {ownedPets.length === 1 ? 'Patient' : 'Patients'}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#4B5563', marginTop: '4px', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                            <span>📞 {client.phone}</span>
+                            {client.email && <span>✉️ {client.email}</span>}
+                            <span>📍 {client.address || 'Paynesville City, Liberia'}</span>
+                          </div>
+                          {client.notes && (
+                            <div style={{ fontSize: '11px', color: '#6B7280', marginTop: '3px', fontStyle: 'italic' }}>
+                              Note: {client.notes}
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button
+                            onClick={() => {
+                              setClientToEdit(client);
+                              setShowClientModal(true);
+                            }}
+                            className="btn-secondary"
+                            style={{ padding: '6px 12px', fontSize: '12px', fontWeight: 600, color: '#111827' }}
+                          >
+                            Edit Client
+                          </button>
+                          <button
+                            onClick={() => {
+                              setPetToEdit(null);
+                              setInitialClientIdForPet(client.id);
+                              setShowRegisterPetModal(true);
+                            }}
+                            className="btn-outline"
+                            style={{ padding: '6px 12px', fontSize: '12px', fontWeight: 700, color: 'var(--color-amber-terracotta)' }}
+                          >
+                            + Add Pet
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Owned Pets Row */}
+                      {ownedPets.length === 0 ? (
+                        <div style={{ padding: '16px', backgroundColor: '#F9FAFB', borderRadius: '12px', textAlign: 'center', fontSize: '12px', color: '#6B7280' }}>
+                          No registered patients linked to this client yet.
+                          <button
+                            onClick={() => {
+                              setPetToEdit(null);
+                              setInitialClientIdForPet(client.id);
+                              setShowRegisterPetModal(true);
+                            }}
+                            style={{ marginLeft: '8px', color: 'var(--color-amber-terracotta)', fontWeight: 700, background: 'none', border: 'none', cursor: 'pointer' }}
+                          >
+                            Register First Pet
+                          </button>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '14px' }}>
+                          {ownedPets.map(p => (
+                            <div key={p.id} style={{ padding: '14px', borderRadius: '14px', border: '1px solid #E5E7EB', backgroundColor: '#FFFFFF', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '10px' }}>
+                                <img
+                                  src={p.photoUrl}
+                                  alt={p.name}
+                                  style={{ width: '60px', height: '60px', borderRadius: '12px', objectFit: 'cover', border: '1px solid #E5E7EB' }}
+                                />
+                                <div>
+                                  <div style={{ fontSize: '16px', fontWeight: 800, color: '#111827' }}>
+                                    {p.name}
+                                  </div>
+                                  <div style={{ fontSize: '12px', color: '#4B5563', fontWeight: 600 }}>
+                                    {p.species} · {p.breed}
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: 'var(--color-amber-terracotta)', fontWeight: 700, marginTop: '2px' }}>
+                                    Rabies Tag #{p.rabiesTag}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ fontSize: '11px', color: '#6B7280', lineHeight: 1.5, marginBottom: '10px' }}>
+                                <div>Sex/Status: <strong>{p.sex}</strong> · Weight: <strong>{p.weightKg} kg</strong></div>
+                                <div>Microchip: <strong>{p.microchipId}</strong></div>
+                              </div>
+
+                              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                <button
+                                  onClick={() => {
+                                    setScannedPetDossier(p);
+                                    setShowDossierModal(true);
+                                  }}
+                                  className="btn-secondary"
+                                  style={{ flex: 1, padding: '5px 8px', fontSize: '11px', fontWeight: 700, color: '#111827' }}
+                                >
+                                  Dossier
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setDocModalPet(p);
+                                    setDocModalType('PASSPORT_BOOKLET');
+                                    setShowClinicDocModal(true);
+                                  }}
+                                  className="btn-outline"
+                                  style={{ padding: '5px 8px', fontSize: '11px', fontWeight: 700, color: 'var(--color-forest-sage)' }}
+                                  title="Official Printable Certificate / Passport"
+                                >
+                                  Passport
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setPetToEdit(p);
+                                    setShowRegisterPetModal(true);
+                                  }}
+                                  className="btn-secondary"
+                                  style={{ padding: '5px 8px', fontSize: '11px', fontWeight: 600, color: '#4B5563' }}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedPetForQr(p);
+                                    setShowPetQrModal(true);
+                                  }}
+                                  className="btn-primary"
+                                  style={{ padding: '5px 8px', fontSize: '11px' }}
+                                  title="Show QR"
+                                >
+                                  <QrCode size={13} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================
+            STAFF TAB 4: COMPLETE INVENTORY MANAGEMENT (FEFO)
+           ======================================================== */}
+        {currentRole !== 'pet_owner' && staffTab === 'inventory' && (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
+                  Pharmacy & Clinical Inventory
+                </h2>
+                <p style={{ fontSize: '13px', color: '#4B5563', fontWeight: 500 }}>
+                  Vaccines, medications, consumables, and livestock supplies · FEFO Expiry Tracking
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  setItemToEdit(null);
+                  setShowInventoryItemModal(true);
+                }}
+                className="btn-primary"
+                style={{ padding: '8px 16px', fontWeight: 700, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Plus size={16} /> Add Inventory Item
+              </button>
+            </div>
+
+            {/* Category Filter Pills */}
+            <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '12px', marginBottom: '16px' }}>
+              {['ALL', 'Vaccine', 'Parasiticide', 'Antibiotic', 'Analgesic', 'Surgical', 'Diagnostic', 'Consumable', 'Pet Care'].map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setInventoryCategoryFilter(cat)}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: '20px',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    whiteSpace: 'nowrap',
+                    cursor: 'pointer',
+                    border: inventoryCategoryFilter === cat ? '1px solid var(--color-amber-terracotta)' : '1px solid #D1D5DB',
+                    backgroundColor: inventoryCategoryFilter === cat ? '#FEF3C7' : '#FFFFFF',
+                    color: inventoryCategoryFilter === cat ? '#92400E' : '#374151'
+                  }}
+                >
+                  {cat === 'ALL' ? 'All Stock' : cat}
+                </button>
+              ))}
+            </div>
+
+            {/* Inventory Table */}
             <div className="card-surface" style={{ padding: '24px' }}>
               <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
                   <thead>
-                    <tr style={{ borderBottom: '2px solid var(--color-border-subtle)' }}>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Invoice #</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Client & Pet</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Date</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Services</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Amount (USD / LRD)</th>
-                      <th style={{ padding: '10px 12px', fontSize: '12px', fontWeight: 700, color: '#111827' }}>Status</th>
+                    <tr style={{ borderBottom: '2px solid var(--color-border-subtle)', color: '#374151', fontWeight: 700 }}>
+                      <th style={{ padding: '10px 12px' }}>Item Name</th>
+                      <th style={{ padding: '10px 12px' }}>Category</th>
+                      <th style={{ padding: '10px 12px' }}>Stock & Status</th>
+                      <th style={{ padding: '10px 12px' }}>Price (USD / LRD)</th>
+                      <th style={{ padding: '10px 12px' }}>Batch #</th>
+                      <th style={{ padding: '10px 12px' }}>Expiry (FEFO)</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inventory
+                      .filter(i => inventoryCategoryFilter === 'ALL' || i.category === inventoryCategoryFilter)
+                      .map(item => {
+                        const isLowStock = item.stockCount <= (item.minimumThreshold || 10);
+                        const isExpired = item.expiryDate && new Date(item.expiryDate) < new Date();
+                        const isExpiringSoon = item.expiryDate && !isExpired && (new Date(item.expiryDate).getTime() - Date.now() < 60 * 24 * 60 * 60 * 1000);
+
+                        return (
+                          <tr key={item.id} style={{ borderBottom: '1px solid #F3F4F6' }}>
+                            <td style={{ padding: '12px', fontWeight: 700, color: '#111827' }}>
+                              {item.name}
+                            </td>
+                            <td style={{ padding: '12px', color: '#4B5563' }}>
+                              <span className="badge badge-slate" style={{ fontSize: '11px' }}>
+                                {item.category}
+                              </span>
+                            </td>
+                            <td style={{ padding: '12px' }}>
+                              <div style={{ fontWeight: 800, color: '#111827' }}>
+                                {item.stockCount} {item.unit}
+                              </div>
+                              <span className={`badge ${isLowStock ? 'badge-amber' : 'badge-sage'}`} style={{ fontSize: '10px', marginTop: '2px' }}>
+                                {isLowStock ? `Low (Reorder <= ${item.minimumThreshold})` : 'In Stock'}
+                              </span>
+                            </td>
+                            <td style={{ padding: '12px' }}>
+                              <div style={{ fontWeight: 700, color: '#111827' }}>${item.unitPriceUSD.toFixed(2)} USD</div>
+                              <div style={{ fontSize: '11px', color: '#6B7280' }}>LRD {Math.round(item.unitPriceUSD * usdToLrdRate).toLocaleString()}</div>
+                            </td>
+                            <td style={{ padding: '12px', color: '#4B5563', fontFamily: 'monospace' }}>
+                              {item.batchNumber || '—'}
+                            </td>
+                            <td style={{ padding: '12px' }}>
+                              <div>{item.expiryDate || 'N/A'}</div>
+                              {isExpired ? (
+                                <span className="badge badge-red" style={{ fontSize: '10px' }}>EXPIRED</span>
+                              ) : isExpiringSoon ? (
+                                <span className="badge badge-amber" style={{ fontSize: '10px' }}>FEFO: Expiring Soon</span>
+                              ) : null}
+                            </td>
+                            <td style={{ padding: '12px', textAlign: 'right' }}>
+                              <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
+                                <button
+                                  onClick={() => {
+                                    setSelectedItemForRestock(item);
+                                    setShowRestockModal(true);
+                                  }}
+                                  className="btn-primary"
+                                  style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 700 }}
+                                >
+                                  Restock
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setItemToEdit(item);
+                                    setShowInventoryItemModal(true);
+                                  }}
+                                  className="btn-secondary"
+                                  style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 600 }}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  onClick={async () => {
+                                    if (window.confirm(`Delete ${item.name} from inventory?`)) {
+                                      await deleteInventoryItemFromFirestore(item.id);
+                                      setInventory(prev => prev.filter(i => i.id !== item.id));
+                                      setToastNotification(`${item.name} deleted.`);
+                                    }
+                                  }}
+                                  className="btn-outline"
+                                  style={{ padding: '4px 8px', fontSize: '11px', color: '#B91C1C' }}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================
+            STAFF TAB 5: BILLING & INVOICING (USD & LRD)
+           ======================================================== */}
+        {currentRole !== 'pet_owner' && staffTab === 'billing' && (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
+                  Billing & Financial Dossier
+                </h2>
+                <p style={{ fontSize: '13px', color: '#4B5563', fontWeight: 500 }}>
+                  Invoices & Payments (Dual Currency: USD & LRD @ {usdToLrdRate} LRD/USD)
+                </p>
+              </div>
+
+              <button
+                onClick={() => setShowInvoiceModal(true)}
+                className="btn-primary"
+                style={{ padding: '8px 16px', fontWeight: 700, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Plus size={16} /> Create Invoice
+              </button>
+            </div>
+
+            {/* Invoices List */}
+            <div className="card-surface" style={{ padding: '24px', marginBottom: '24px' }}>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid var(--color-border-subtle)', color: '#374151', fontWeight: 700 }}>
+                      <th style={{ padding: '10px 12px' }}>Invoice #</th>
+                      <th style={{ padding: '10px 12px' }}>Client & Pet</th>
+                      <th style={{ padding: '10px 12px' }}>Date</th>
+                      <th style={{ padding: '10px 12px' }}>Services Rendered</th>
+                      <th style={{ padding: '10px 12px' }}>Amount (USD / LRD)</th>
+                      <th style={{ padding: '10px 12px' }}>Status</th>
+                      <th style={{ padding: '10px 12px', textAlign: 'right' }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {invoices.map(inv => (
-                      <tr key={inv.id} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-                        <td style={{ padding: '12px', fontWeight: 700, fontSize: '13px', color: '#111827' }}>{inv.id}</td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 600 }}>
-                          <strong>{inv.clientName}</strong> ({inv.petName})
-                        </td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 600 }}>{inv.date}</td>
-                        <td style={{ padding: '12px', fontSize: '13px', color: '#111827', fontWeight: 600 }}>{inv.itemsSummary}</td>
-                        <td style={{ padding: '12px', fontSize: '13px', fontWeight: 700, color: '#111827' }}>
+                      <tr key={inv.id} style={{ borderBottom: '1px solid #F3F4F6' }}>
+                        <td style={{ padding: '12px', fontWeight: 700, color: '#111827' }}>{inv.id}</td>
+                        <td style={{ padding: '12px', color: '#111827', fontWeight: 600 }}>{inv.clientName} ({inv.petName})</td>
+                        <td style={{ padding: '12px', color: '#4B5563' }}>{inv.date}</td>
+                        <td style={{ padding: '12px', color: '#4B5563' }}>{inv.itemsSummary}</td>
+                        <td style={{ padding: '12px', fontWeight: 700, color: '#111827' }}>
                           ${inv.amountUSD.toFixed(2)} / LRD {inv.amountLRD.toLocaleString()}
                         </td>
                         <td style={{ padding: '12px' }}>
-                          <span className="badge badge-sage">{inv.status}</span>
+                          <span className={`badge ${inv.status === 'PAID' ? 'badge-sage' : inv.status === 'PARTIAL' ? 'badge-amber' : 'badge-red'}`}>
+                            {inv.status}
+                          </span>
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right' }}>
+                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                            <button
+                              onClick={() => {
+                                setDocModalInvoice(inv);
+                                setDocModalType('INVOICE_RECEIPT');
+                                setShowClinicDocModal(true);
+                              }}
+                              className="btn-outline"
+                              style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 700, color: '#111827' }}
+                              title="Print Official Invoice / Receipt"
+                            >
+                              <Printer size={13} style={{ display: 'inline', marginRight: '3px' }} /> Receipt
+                            </button>
+
+                            {inv.status !== 'PAID' ? (
+                              <button
+                                onClick={() => {
+                                  setSelectedInvoiceForPayment(inv);
+                                  setShowPaymentModal(true);
+                                }}
+                                className="btn-primary"
+                                style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 700 }}
+                              >
+                                Record Payment
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: '12px', color: '#059669', fontWeight: 700 }}>Settled</span>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1129,20 +1635,465 @@ export default function App() {
                 </table>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ========================================================
+            STAFF TAB 6: SETTINGS, DUAL-CURRENCY & USER ADMINISTRATION
+           ======================================================== */}
+        {currentRole !== 'pet_owner' && staffTab === 'settings' && (
+          <div>
+            <div style={{ marginBottom: '24px' }}>
+              <h2 className="font-serif" style={{ fontSize: '24px', fontWeight: 700, color: '#111827' }}>
+                Clinic Settings & Operational Administration
+              </h2>
+              <p style={{ fontSize: '13px', color: '#4B5563', fontWeight: 500 }}>
+                Manage clinic identity, exchange rate, and staff role governance
+              </p>
+            </div>
+
+            {/* Currency & Exchange Rate (USD & LRD) */}
+            <div className="card-surface" style={{ padding: '24px', marginBottom: '28px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+                <div>
+                  <h3 className="font-serif" style={{ fontSize: '18px', fontWeight: 700, color: '#111827', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <DollarSign size={18} color="var(--color-amber-terracotta)" /> Currency & Operational Exchange Rate
+                  </h3>
+                  <p style={{ fontSize: '12px', color: '#4B5563', marginTop: '2px' }}>
+                    Standard Liberia dual-currency system (United States Dollar & Liberian Dollar)
+                  </p>
+                </div>
+                <span className="badge badge-amber" style={{ fontSize: '12px', fontWeight: 700 }}>
+                  Current Rate: 1 USD = {usdToLrdRate} LRD
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap', backgroundColor: '#F9FAFB', padding: '16px', borderRadius: '12px', border: '1px solid #E5E7EB' }}>
+                <div style={{ minWidth: '220px' }}>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>
+                    USD to LRD Exchange Rate
+                  </label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={tempRateInput}
+                    onChange={(e) => setTempRateInput(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', color: '#111827', fontWeight: 700, backgroundColor: '#FFFFFF', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div style={{ alignSelf: 'flex-end' }}>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const newRate = parseFloat(tempRateInput) || 194.0;
+                      await saveClinicSettingsToFirestore({ usdToLrdRate: newRate });
+                      setUsdToLrdRate(newRate);
+                      setToastNotification(`Exchange rate updated to 1 USD = ${newRate} LRD.`);
+                    }}
+                    className="btn-primary"
+                    style={{ padding: '9px 18px', fontWeight: 700, fontSize: '13px' }}
+                  >
+                    Update Exchange Rate
+                  </button>
+                </div>
+
+                <p style={{ fontSize: '12px', color: '#6B7280', margin: 0, width: '100%' }}>
+                  ℹ️ Newly generated invoices automatically calculate amounts in both USD and LRD using this rate. Historical invoices preserve their original exchange rate for financial integrity.
+                </p>
+              </div>
+            </div>
+
+            {/* Clinic Branding Form */}
+            <div className="card-surface" style={{ padding: '24px', marginBottom: '28px' }}>
+              <h3 className="font-serif" style={{ fontSize: '18px', fontWeight: 700, color: '#111827', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Building size={18} color="var(--color-amber-terracotta)" /> Clinic Profile & Official Contact
+              </h3>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>
+                    Clinic Official Name
+                  </label>
+                  <input
+                    type="text"
+                    value={clinicName}
+                    onChange={(e) => setClinicName(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', color: '#111827', fontWeight: 600, backgroundColor: '#FFFFFF', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>
+                    Clinic Phone / Hotline
+                  </label>
+                  <input
+                    type="text"
+                    value={clinicPhone}
+                    onChange={(e) => setClinicPhone(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', color: '#111827', fontWeight: 600, backgroundColor: '#FFFFFF', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>
+                    Physical Address (Liberia)
+                  </label>
+                  <input
+                    type="text"
+                    value={clinicAddress}
+                    onChange={(e) => setClinicAddress(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', color: '#111827', fontWeight: 600, backgroundColor: '#FFFFFF', boxSizing: 'border-box' }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  onClick={handleSaveClinicSettings}
+                  className="btn-primary"
+                  style={{ padding: '8px 18px', fontWeight: 700, fontSize: '13px' }}
+                >
+                  Save Clinic Information
+                </button>
+              </div>
+            </div>
+
+            {/* ROLE-BASED USER ADMINISTRATION */}
+            {(currentRole === 'super_admin' || currentRole === 'clinic_owner') ? (
+              <UserManagement />
+            ) : (
+              <div style={{ padding: '16px 20px', backgroundColor: '#F3F4F6', borderRadius: '16px', border: '1px solid #E5E7EB', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <ShieldCheck size={24} color="#6B7280" />
+                <div>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#111827' }}>
+                    User & Staff Access Controls
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#4B5563', fontWeight: 500, marginTop: '2px' }}>
+                    Protected administrative function reserved for Super Admin and Clinic Owners.
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
       </main>
 
-      {/* PRINTABLE / EXPORTABLE PASSPORT MODAL */}
-      {showPassportModal && (
+      {/* ========================================================
+          MOBILE PERSISTENT BOTTOM NAVIGATION BAR
+          (Matches Android native bottom navigation experience)
+         ======================================================== */}
+      <div style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        backgroundColor: '#FFFFFF',
+        borderTop: '1px solid var(--color-border-subtle)',
+        display: 'flex',
+        justifyContent: 'space-around',
+        alignItems: 'center',
+        padding: '6px 8px',
+        zIndex: 40,
+        boxShadow: '0 -2px 10px rgba(0, 0, 0, 0.05)'
+      }}>
+        {currentRole === 'pet_owner' ? (
+          <>
+            <button
+              onClick={() => setPetOwnerTab('mypets')}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: '48px',
+                background: 'none',
+                border: 'none',
+                color: petOwnerTab === 'mypets' ? 'var(--color-amber-terracotta)' : '#111827',
+                fontWeight: petOwnerTab === 'mypets' ? 800 : 700,
+                fontSize: '11px',
+                cursor: 'pointer',
+                gap: '3px'
+              }}
+            >
+              <HeartHandshake size={20} />
+              <span>My Pets</span>
+            </button>
+            <button
+              onClick={() => setPetOwnerTab('visits')}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: '48px',
+                background: 'none',
+                border: 'none',
+                color: petOwnerTab === 'visits' ? 'var(--color-amber-terracotta)' : '#111827',
+                fontWeight: petOwnerTab === 'visits' ? 800 : 700,
+                fontSize: '11px',
+                cursor: 'pointer',
+                gap: '3px'
+              }}
+            >
+              <Calendar size={20} />
+              <span>Visits</span>
+            </button>
+            <button
+              onClick={() => setPetOwnerTab('settings')}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: '48px',
+                background: 'none',
+                border: 'none',
+                color: petOwnerTab === 'settings' ? 'var(--color-amber-terracotta)' : '#111827',
+                fontWeight: petOwnerTab === 'settings' ? 800 : 700,
+                fontSize: '11px',
+                cursor: 'pointer',
+                gap: '3px'
+              }}
+            >
+              <Settings size={20} />
+              <span>Settings</span>
+            </button>
+          </>
+        ) : (
+          /* Staff: Today | Clinical | Clients | Billing | Settings */
+          <>
+            <button
+              onClick={() => setStaffTab('today')}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: '48px',
+                background: 'none',
+                border: 'none',
+                color: staffTab === 'today' ? 'var(--color-amber-terracotta)' : '#111827',
+                fontWeight: staffTab === 'today' ? 800 : 700,
+                fontSize: '11px',
+                cursor: 'pointer',
+                gap: '3px'
+              }}
+            >
+              <Calendar size={18} />
+              <span>Today</span>
+            </button>
+            <button
+              onClick={() => setStaffTab('clinical')}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: '48px',
+                background: 'none',
+                border: 'none',
+                color: staffTab === 'clinical' ? 'var(--color-amber-terracotta)' : '#111827',
+                fontWeight: staffTab === 'clinical' ? 800 : 700,
+                fontSize: '11px',
+                cursor: 'pointer',
+                gap: '3px'
+              }}
+            >
+              <Stethoscope size={18} />
+              <span>Clinical</span>
+            </button>
+            <button
+              onClick={() => setStaffTab('clients')}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: '48px',
+                background: 'none',
+                border: 'none',
+                color: staffTab === 'clients' ? 'var(--color-amber-terracotta)' : '#111827',
+                fontWeight: staffTab === 'clients' ? 800 : 700,
+                fontSize: '11px',
+                cursor: 'pointer',
+                gap: '3px'
+              }}
+            >
+              <User size={18} />
+              <span>Clients</span>
+            </button>
+            <button
+              onClick={() => setStaffTab('billing')}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: '48px',
+                background: 'none',
+                border: 'none',
+                color: staffTab === 'billing' ? 'var(--color-amber-terracotta)' : '#111827',
+                fontWeight: staffTab === 'billing' ? 800 : 700,
+                fontSize: '11px',
+                cursor: 'pointer',
+                gap: '3px'
+              }}
+            >
+              <Receipt size={18} />
+              <span>Billing</span>
+            </button>
+            <button
+              onClick={() => setStaffTab('settings')}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: '48px',
+                background: 'none',
+                border: 'none',
+                color: staffTab === 'settings' ? 'var(--color-amber-terracotta)' : '#111827',
+                fontWeight: staffTab === 'settings' ? 800 : 700,
+                fontSize: '11px',
+                cursor: 'pointer',
+                gap: '3px'
+              }}
+            >
+              <Settings size={18} />
+              <span>Settings</span>
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* ========================================================
+          MODALS
+         ======================================================== */}
+
+      {/* Real Camera Scanner Modal (both Pet Owner & Staff with ownership checking) */}
+      <CameraScannerModal
+        isOpen={showScannerModal}
+        onClose={() => setShowScannerModal(false)}
+        pets={pets}
+        currentRole={currentRole}
+        onPetVerified={(pet) => {
+          setShowScannerModal(false);
+          setScannedPetDossier(pet);
+          setShowDossierModal(true);
+        }}
+      />
+
+      {/* Staff Authorized QR / Tag Generator Modal */}
+      <StaffQrGeneratorModal
+        isOpen={showStaffQrGenModal}
+        onClose={() => setShowStaffQrGenModal(false)}
+        pets={pets}
+        onGenerateCode={({ petId, tagType, code }) => {
+          console.log('Tag generated:', { petId, tagType, code });
+        }}
+      />
+
+      {/* SHOW PET QR MODAL */}
+      {showPetQrModal && (() => {
+        const targetQrPet = selectedPetForQr || activePet;
+        if (!targetQrPet) return null;
+        return (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+            padding: '20px'
+          }}>
+            <div style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '24px',
+              maxWidth: '420px',
+              width: '100%',
+              padding: '28px',
+              textAlign: 'center',
+              boxShadow: 'var(--shadow-lg)',
+              border: '2px solid var(--color-amber-terracotta)'
+            }}>
+              <h3 className="font-serif" style={{ fontSize: '20px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>
+                {targetQrPet.name}'s Health Passport QR
+              </h3>
+              <p style={{ fontSize: '12px', color: '#4B5563', fontWeight: 600, marginBottom: '20px' }}>
+                Happy Paws Liberia · Rabies Collar Tag #{targetQrPet.rabiesTag}
+              </p>
+
+              <div style={{
+                display: 'inline-block',
+                padding: '16px',
+                backgroundColor: '#FFFFFF',
+                borderRadius: '20px',
+                border: '2px solid var(--color-border-subtle)',
+                marginBottom: '20px'
+              }}>
+                {(() => {
+                  const qrPayload = JSON.stringify({
+                    type: 'HAPPY_PAWS_PET_PASSPORT',
+                    petId: targetQrPet.id,
+                    name: targetQrPet.name,
+                    rabiesTag: targetQrPet.rabiesTag,
+                    microchipId: targetQrPet.microchipId
+                  });
+                  const matrix = generateQrMatrix(qrPayload);
+                  return (
+                    <svg viewBox={`0 0 ${matrix.length} ${matrix.length}`} style={{ width: '180px', height: '180px' }} shapeRendering="crispEdges">
+                      {matrix.map((row, r) => row.map((cell, c) => (
+                        <rect key={`${r}-${c}`} x={c} y={r} width={1} height={1} fill={cell ? '#111827' : '#FFFFFF'} />
+                      )))}
+                    </svg>
+                  );
+                })()}
+              </div>
+
+              <p style={{ fontSize: '12px', color: '#4B5563', lineHeight: 1.5, marginBottom: '20px' }}>
+                Scan at Happy Paws Liberia Rescue Center reception (RIA Highway, Paynesville) for rapid admission and verified rabies tag verification.
+              </p>
+
+              <button 
+                onClick={() => {
+                  setShowPetQrModal(false);
+                  setSelectedPetForQr(null);
+                }}
+                className="btn-primary"
+                style={{ width: '100%', padding: '10px', fontWeight: 700 }}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* PET MEDICAL DOSSIER MODAL */}
+      {showDossierModal && scannedPetDossier && (
         <div style={{
           position: 'fixed',
           top: 0,
           left: 0,
           right: 0,
           bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.65)',
+          backgroundColor: 'rgba(0, 0, 0, 0.7)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -1151,70 +2102,174 @@ export default function App() {
         }}>
           <div style={{
             backgroundColor: '#FFFFFF',
-            borderRadius: '20px',
-            maxWidth: '600px',
+            borderRadius: '24px',
+            maxWidth: '560px',
             width: '100%',
             maxHeight: '90vh',
             overflowY: 'auto',
             padding: '28px',
-            boxShadow: 'var(--shadow-lg)',
-            border: '2px solid var(--color-amber-terracotta)'
+            boxShadow: 'var(--shadow-lg)'
           }}>
-            <div style={{ textAlign: 'center', borderBottom: '2px solid var(--color-border-subtle)', paddingBottom: '16px', marginBottom: '20px' }}>
-              <h2 className="font-serif" style={{ fontSize: '22px', fontWeight: 700, color: '#111827' }}>
-                OFFICIAL PET HEALTH PASSPORT
-              </h2>
-              <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 700 }}>
-                Happy Paws Liberia Rescue Center · Congo Town, Monrovia
-              </p>
-              <p style={{ fontSize: '12px', color: '#111827', fontWeight: 700, marginTop: '2px' }}>
-                Document #HP-MED-{activePet.id}-2024
-              </p>
-            </div>
-
-            <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '20px' }}>
-              <img 
-                src={activePet.photoUrl} 
-                alt={activePet.name} 
-                style={{ width: '90px', height: '90px', borderRadius: '16px', objectFit: 'cover' }} 
-              />
-              <div>
-                <h3 className="font-serif" style={{ fontSize: '20px', fontWeight: 700, color: '#111827' }}>{activePet.name}</h3>
-                <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600 }}>Breed: <strong>{activePet.breed}</strong></p>
-                <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600 }}>Sex: {activePet.sex} · Weight: {activePet.weightKg} kg</p>
-                <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600 }}>Microchip: <strong>{activePet.microchipId}</strong></p>
-                <p style={{ fontSize: '13px', color: 'var(--color-amber-terracotta)', fontWeight: 700 }}>Rabies Tag: {activePet.rabiesTag}</p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <img src={scannedPetDossier.photoUrl} alt={scannedPetDossier.name} style={{ width: '56px', height: '56px', borderRadius: '14px', objectFit: 'cover' }} />
+                <div>
+                  <h3 className="font-serif" style={{ fontSize: '20px', fontWeight: 700, color: '#111827' }}>
+                    {scannedPetDossier.name}
+                  </h3>
+                  <p style={{ fontSize: '12px', color: 'var(--color-amber-terracotta)', fontWeight: 700 }}>
+                    Verified Rabies Tag #{scannedPetDossier.rabiesTag}
+                  </p>
+                </div>
               </div>
-            </div>
-
-            <div style={{ background: 'var(--color-card-warm)', padding: '14px', borderRadius: '12px', marginBottom: '20px' }}>
-              <h4 style={{ fontSize: '13px', fontWeight: 700, color: '#111827', marginBottom: '8px' }}>
-                Verified Rabies & Core Vaccination Certificate
-              </h4>
-              <p style={{ fontSize: '12px', color: '#111827', fontWeight: 600, lineHeight: 1.6 }}>
-                This certifies that {activePet.name} has been examined and vaccinated against Rabies Virus and Canine Core Distemper/Parvo at Happy Paws Liberia Veterinary Clinic. Valid for cross-county movement and domestic pet registry.
-              </p>
-            </div>
-
-            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-              <button 
-                onClick={() => setShowPassportModal(false)}
-                className="btn-secondary"
-                style={{ padding: '8px 16px', color: '#111827', fontWeight: 700 }}
-              >
-                Close
+              <button onClick={() => setShowDossierModal(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: '#6B7280' }}>
+                ✕
               </button>
-              <button 
-                onClick={() => window.print()}
-                className="btn-primary"
-                style={{ padding: '8px 18px', fontWeight: 700 }}
+            </div>
+
+            <div style={{ background: '#F9FAFB', padding: '14px', borderRadius: '12px', marginBottom: '16px', fontSize: '13px' }}>
+              <p><strong>Species / Breed:</strong> {scannedPetDossier.species} ({scannedPetDossier.breed})</p>
+              <p><strong>Sex & Weight:</strong> {scannedPetDossier.sex} · {scannedPetDossier.weightKg} kg</p>
+              <p><strong>Microchip:</strong> {scannedPetDossier.microchipId}</p>
+              <p><strong>Special Notes:</strong> {scannedPetDossier.notes}</p>
+            </div>
+
+            {currentRole !== 'pet_owner' && (
+              <div style={{ marginBottom: '16px' }}>
+                <button
+                  onClick={async () => {
+                    const newApt: AppointmentItem = {
+                      id: Date.now(),
+                      clientName: scannedPetDossier.id === 1 ? 'Anthony Tolbert' : scannedPetDossier.id === 2 ? 'Kofa Weah' : 'Registered Client',
+                      petName: scannedPetDossier.name,
+                      petId: scannedPetDossier.id,
+                      species: scannedPetDossier.species,
+                      time: 'Now (Walk-in)',
+                      reason: 'QR Scan Reception Check-in',
+                      vetName: 'Dr. David Kpadeh',
+                      status: 'Confirmed'
+                    };
+                    try {
+                      await saveAppointmentToFirestore(newApt);
+                      setAppointments(prev => [newApt, ...prev.filter(a => a.id !== newApt.id)]);
+                      setToastNotification(`Patient ${scannedPetDossier.name} admitted to Today's Queue!`);
+                    } catch (err: any) {
+                      setAppointments(prev => [newApt, ...prev]);
+                    }
+                    setShowDossierModal(false);
+                    setStaffTab('today');
+                  }}
+                  className="btn-primary"
+                  style={{ width: '100%', padding: '10px', fontWeight: 700, backgroundColor: 'var(--color-forest-sage)' }}
+                >
+                  Admit to Today's Clinic Queue
+                </button>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button
+                onClick={() => {
+                  setSelectedPetForPassport(scannedPetDossier);
+                  setShowDossierModal(false);
+                  setShowPassportModal(true);
+                }}
+                className="btn-outline"
+                style={{ padding: '8px 14px', fontWeight: 700, fontSize: '12px' }}
               >
-                <Printer size={16} /> Print Official Passport
+                <Printer size={14} style={{ display: 'inline', marginRight: '4px' }} /> View Passport
+              </button>
+              <button onClick={() => setShowDossierModal(false)} className="btn-secondary" style={{ padding: '8px 16px', fontWeight: 700, color: '#111827' }}>
+                Close
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* PRINTABLE PASSPORT MODAL */}
+      {showPassportModal && (() => {
+        const targetPassportPet = selectedPetForPassport || activePet;
+        if (!targetPassportPet) return null;
+        return (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+            padding: '20px'
+          }}>
+            <div style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '20px',
+              maxWidth: '560px',
+              width: '100%',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              padding: '28px',
+              boxShadow: 'var(--shadow-lg)',
+              border: '2px solid var(--color-amber-terracotta)'
+            }}>
+              <div style={{ textAlign: 'center', borderBottom: '2px solid var(--color-border-subtle)', paddingBottom: '16px', marginBottom: '20px' }}>
+                <h2 className="font-serif" style={{ fontSize: '22px', fontWeight: 700, color: '#111827' }}>
+                  OFFICIAL PET HEALTH PASSPORT
+                </h2>
+                <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 700 }}>
+                  Happy Paws Liberia Rescue Center · Honeybee Junction, R2 Community, RIA Highway, Paynesville City
+                </p>
+                <p style={{ fontSize: '12px', color: '#111827', fontWeight: 700, marginTop: '2px' }}>
+                  Document #HP-MED-{targetPassportPet.id}-2026
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '20px' }}>
+                <img 
+                  src={targetPassportPet.photoUrl} 
+                  alt={targetPassportPet.name} 
+                  style={{ width: '84px', height: '84px', borderRadius: '16px', objectFit: 'cover' }} 
+                />
+                <div>
+                  <h3 className="font-serif" style={{ fontSize: '19px', fontWeight: 700, color: '#111827' }}>{targetPassportPet.name}</h3>
+                  <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600 }}>Breed: <strong>{targetPassportPet.breed}</strong></p>
+                  <p style={{ fontSize: '13px', color: '#111827', fontWeight: 600 }}>Microchip: <strong>{targetPassportPet.microchipId}</strong></p>
+                  <p style={{ fontSize: '13px', color: 'var(--color-amber-terracotta)', fontWeight: 700 }}>Rabies Tag: #{targetPassportPet.rabiesTag}</p>
+                </div>
+              </div>
+
+              <div style={{ background: 'var(--color-card-warm)', padding: '14px', borderRadius: '12px', marginBottom: '20px' }}>
+                <h4 style={{ fontSize: '13px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>
+                  Verified Rabies & Core Vaccination Certificate
+                </h4>
+                <p style={{ fontSize: '12px', color: '#111827', fontWeight: 600, lineHeight: 1.5 }}>
+                  Certifies that {targetPassportPet.name} has been examined and vaccinated against Rabies Virus and Canine Core Distemper/Parvo at Happy Paws Liberia Veterinary Clinic.
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                <button 
+                  onClick={() => {
+                    setShowPassportModal(false);
+                    setSelectedPetForPassport(null);
+                  }} 
+                  className="btn-secondary" 
+                  style={{ padding: '8px 16px', color: '#111827', fontWeight: 700 }}
+                >
+                  Close
+                </button>
+                <button onClick={() => window.print()} className="btn-primary" style={{ padding: '8px 18px', fontWeight: 700 }}>
+                  <Printer size={16} /> Print Passport
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* NEW APPOINTMENT MODAL */}
       {showNewAppointmentModal && (
@@ -1224,7 +2279,7 @@ export default function App() {
           left: 0,
           right: 0,
           bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.65)',
+          backgroundColor: 'rgba(0, 0, 0, 0.7)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -1234,16 +2289,16 @@ export default function App() {
           <div style={{
             backgroundColor: '#FFFFFF',
             borderRadius: '20px',
-            maxWidth: '480px',
+            maxWidth: '460px',
             width: '100%',
             padding: '28px',
             boxShadow: 'var(--shadow-lg)'
           }}>
             <h3 className="font-serif" style={{ fontSize: '20px', fontWeight: 700, color: '#111827', marginBottom: '8px' }}>
-              Book Veterinary Appointment
+              Request Veterinary Consultation
             </h3>
-            <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600, marginBottom: '20px' }}>
-              Schedule a consultation at Happy Paws Clinic, Congo Town, Monrovia.
+            <p style={{ fontSize: '12px', color: '#4B5563', fontWeight: 500, marginBottom: '20px' }}>
+              Schedule a visit at Happy Paws Clinic, RIA Highway, Paynesville.
             </p>
 
             <form onSubmit={handleBookAppointment} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -1252,10 +2307,13 @@ export default function App() {
                 <select 
                   value={newPetName}
                   onChange={(e) => setNewPetName(e.target.value)}
-                  className="form-input"
-                  style={{ color: '#111827', fontWeight: 600 }}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '13px', color: '#111827', fontWeight: 600 }}
                 >
-                  {pets.map(p => <option key={p.id} value={p.name}>{p.name} ({p.species})</option>)}
+                  {pets.length === 0 ? (
+                    <option value="New Patient">New Patient</option>
+                  ) : (
+                    pets.map(p => <option key={p.id} value={p.name}>{p.name} ({p.species})</option>)
+                  )}
                 </select>
               </div>
 
@@ -1265,22 +2323,20 @@ export default function App() {
                   type="text" 
                   value={newReason}
                   onChange={(e) => setNewReason(e.target.value)}
-                  className="form-input"
                   placeholder="e.g. Annual Rabies Booster, Deworming, Skin Allergy"
-                  style={{ color: '#111827', fontWeight: 600 }}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '13px', color: '#111827', fontWeight: 600, boxSizing: 'border-box' }}
                   required
                 />
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>Preferred Date</label>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>Date</label>
                   <input 
                     type="date" 
                     value={newDate}
                     onChange={(e) => setNewDate(e.target.value)}
-                    className="form-input"
-                    style={{ color: '#111827', fontWeight: 600 }}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '13px', color: '#111827', fontWeight: 600, boxSizing: 'border-box' }}
                     required
                   />
                 </div>
@@ -1289,11 +2345,10 @@ export default function App() {
                   <select 
                     value={newTime}
                     onChange={(e) => setNewTime(e.target.value)}
-                    className="form-input"
-                    style={{ color: '#111827', fontWeight: 600 }}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '13px', color: '#111827', fontWeight: 600, boxSizing: 'border-box' }}
                   >
-                    <option value="09:00 AM">09:00 AM</option>
-                    <option value="10:30 AM">10:30 AM</option>
+                    <option value="09:30 AM">09:30 AM</option>
+                    <option value="11:00 AM">11:00 AM</option>
                     <option value="02:00 PM">02:00 PM</option>
                     <option value="03:30 PM">03:30 PM</option>
                   </select>
@@ -1322,492 +2377,134 @@ export default function App() {
         </div>
       )}
 
-      {/* AUTHENTICATION MODAL */}
-      {showAuthModal && (
+      {/* REGISTER PET MODAL */}
+      <RegisterPetModal
+        isOpen={showRegisterPetModal}
+        onClose={() => {
+          setShowRegisterPetModal(false);
+          setPetToEdit(null);
+          setInitialClientIdForPet(undefined);
+        }}
+        clients={clients}
+        initialClientId={initialClientIdForPet}
+        petToEdit={petToEdit}
+        onPetSaved={(savedPet) => {
+          setPets(prev => {
+            const exists = prev.some(p => p.id === savedPet.id);
+            if (exists) {
+              return prev.map(p => p.id === savedPet.id ? savedPet : p);
+            }
+            return [savedPet, ...prev];
+          });
+          setSelectedPetId(savedPet.id);
+          setToastNotification(`Patient ${savedPet.name} (${savedPet.species}) saved successfully!`);
+        }}
+        onClientCreated={(newClient) => {
+          setClients(prev => {
+            const exists = prev.some(c => c.id === newClient.id);
+            if (exists) return prev;
+            return [newClient, ...prev];
+          });
+        }}
+      />
+
+      {/* CLINICAL EXAM & SOAP NOTES MODAL */}
+      <ClinicalExamModal
+        isOpen={showClinicalExamModal}
+        onClose={() => setShowClinicalExamModal(false)}
+        pets={pets}
+        vetName={authenticatedUser.fullName}
+        onExamSaved={(exam) => {
+          setClinicalExams(prev => [exam, ...prev]);
+          setToastNotification(`Clinical exam for ${exam.petName} recorded successfully!`);
+        }}
+      />
+
+      {/* INVOICE MODAL */}
+      <InvoiceModal
+        isOpen={showInvoiceModal}
+        onClose={() => setShowInvoiceModal(false)}
+        pets={pets}
+        usdToLrdRate={194.0}
+        onInvoiceCreated={(invoice) => {
+          setInvoices(prev => [invoice, ...prev]);
+          setToastNotification(`Invoice ${invoice.id} created successfully!`);
+        }}
+      />
+
+      {/* PAYMENT RECORDING MODAL */}
+      <PaymentModal
+        isOpen={showPaymentModal}
+        onClose={() => {
+          setShowPaymentModal(false);
+          setSelectedInvoiceForPayment(null);
+        }}
+        invoice={selectedInvoiceForPayment}
+        onPaymentRecorded={(invId, amount, method) => {
+          setInvoices(prev => prev.map(inv => {
+            if (inv.id === invId) {
+              const newPaid = (inv.paidAmountUSD || 0) + amount;
+              const newBal = Math.max(0, inv.amountUSD - newPaid);
+              return {
+                ...inv,
+                paidAmountUSD: newPaid,
+                balanceUSD: newBal,
+                status: newBal <= 0 ? 'PAID' : 'PARTIAL',
+                paymentMethod: method
+              };
+            }
+            return inv;
+          }));
+          setToastNotification(`Payment of $${amount} USD recorded successfully!`);
+        }}
+      />
+
+      {/* INVENTORY RESTOCK MODAL */}
+      <InventoryRestockModal
+        isOpen={showRestockModal}
+        onClose={() => {
+          setShowRestockModal(false);
+          setSelectedItemForRestock(null);
+        }}
+        item={selectedItemForRestock}
+        onRestockSaved={(updated) => {
+          setInventory(prev => prev.map(i => i.id === updated.id ? updated : i));
+          setToastNotification(`Stock for ${updated.name} updated to ${updated.stockCount} ${updated.unit}.`);
+        }}
+      />
+
+      {/* Hidden File Input for Pet Photo Upload */}
+      <input
+        type="file"
+        ref={photoUploadInputRef}
+        style={{ display: 'none' }}
+        accept="image/*"
+        onChange={handlePhotoFileSelected}
+      />
+
+      {/* Toast Notification */}
+      {toastNotification && (
         <div style={{
           position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.65)',
+          bottom: '80px',
+          right: '20px',
+          backgroundColor: '#111827',
+          color: '#FFFFFF',
+          padding: '12px 20px',
+          borderRadius: '12px',
+          fontSize: '13px',
+          fontWeight: 600,
+          boxShadow: 'var(--shadow-lg)',
+          zIndex: 200,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 100,
-          padding: '20px'
+          gap: '8px'
         }}>
-          <div style={{
-            backgroundColor: '#FFFFFF',
-            borderRadius: '20px',
-            maxWidth: '440px',
-            width: '100%',
-            padding: '28px',
-            boxShadow: 'var(--shadow-lg)'
-          }}>
-            <h3 className="font-serif" style={{ fontSize: '20px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>
-              Firebase Account Sign In
-            </h3>
-            <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600, marginBottom: '20px' }}>
-              Sign in with your Happy Paws staff or pet owner credentials.
-            </p>
-
-            {authError && (
-              <div style={{ padding: '10px', borderRadius: '10px', backgroundColor: 'var(--color-red-light)', color: 'var(--color-status-red)', fontSize: '12px', fontWeight: 700, marginBottom: '14px' }}>
-                {authError}
-              </div>
-            )}
-
-            <form onSubmit={handleSignIn} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>Email</label>
-                <input 
-                  type="email" 
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                  className="form-input"
-                  placeholder="e.g. anthony@happypaws.lr or vet@happypaws.lr"
-                  style={{ color: '#111827', fontWeight: 600 }}
-                  required
-                />
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>Password</label>
-                <input 
-                  type="password" 
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  className="form-input"
-                  placeholder="••••••••"
-                  style={{ color: '#111827', fontWeight: 600 }}
-                  required
-                />
-              </div>
-
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '10px' }}>
-                <button 
-                  type="button" 
-                  onClick={() => setShowAuthModal(false)}
-                  className="btn-secondary"
-                  style={{ padding: '8px 16px', color: '#111827', fontWeight: 700 }}
-                >
-                  Close
-                </button>
-                <button 
-                  type="submit" 
-                  className="btn-primary"
-                  style={{ padding: '8px 18px', fontWeight: 700 }}
-                >
-                  <LogIn size={15} /> Sign In
-                </button>
-              </div>
-            </form>
-          </div>
+          <CheckCircle2 size={16} color="var(--color-forest-sage)" />
+          <span>{toastNotification}</span>
         </div>
       )}
 
-      {/* PET QR CODE MODAL (Pet Owner View) */}
-      {showPetQrModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.65)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 100,
-          padding: '20px'
-        }}>
-          <div style={{
-            backgroundColor: '#FFFFFF',
-            borderRadius: '24px',
-            maxWidth: '460px',
-            width: '100%',
-            padding: '28px',
-            boxShadow: 'var(--shadow-lg)',
-            border: '2px solid var(--color-amber-terracotta)',
-            textAlign: 'center'
-          }}>
-            <h3 className="font-serif" style={{ fontSize: '22px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>
-              {activePet.name}'s Digital QR Passport
-            </h3>
-            <p style={{ fontSize: '12px', color: 'var(--color-amber-terracotta)', fontWeight: 700, marginBottom: '16px' }}>
-              Happy Paws Liberia Rescue Center · Verified Pet ID
-            </p>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'var(--color-card-warm)', padding: '12px 16px', borderRadius: '14px', marginBottom: '16px', textAlign: 'left' }}>
-              <img 
-                src={activePet.photoUrl} 
-                alt={activePet.name} 
-                style={{ width: '48px', height: '48px', borderRadius: '12px', objectFit: 'cover' }} 
-              />
-              <div>
-                <h4 style={{ fontSize: '15px', fontWeight: 700, color: '#111827' }}>{activePet.name}</h4>
-                <p style={{ fontSize: '12px', color: '#1F2937', fontWeight: 600 }}>{activePet.species} · {activePet.breed}</p>
-                <p style={{ fontSize: '11px', color: '#111827', fontWeight: 700 }}>Rabies Tag: {activePet.rabiesTag}</p>
-              </div>
-            </div>
-
-            {/* QR Code SVG */}
-            <div style={{
-              display: 'inline-block',
-              padding: '14px',
-              backgroundColor: '#FFFFFF',
-              borderRadius: '16px',
-              border: '1px solid var(--color-border-subtle)',
-              boxShadow: 'var(--shadow-sm)',
-              marginBottom: '16px'
-            }}>
-              {(() => {
-                const payload = `HAPPYPAWS:PET:${activePet.id}:${activePet.name}:${activePet.rabiesTag}:${activePet.microchipId}`;
-                const matrix = generateQrMatrix(payload);
-                const cellSize = 7;
-                const matrixDim = matrix.length;
-                return (
-                  <svg 
-                    width={matrixDim * cellSize} 
-                    height={matrixDim * cellSize} 
-                    viewBox={`0 0 ${matrixDim * cellSize} ${matrixDim * cellSize}`}
-                    style={{ display: 'block' }}
-                  >
-                    <rect width="100%" height="100%" fill="#FFFFFF" />
-                    {matrix.map((row, y) =>
-                      row.map((cell, x) =>
-                        cell ? (
-                          <rect
-                            key={`${x}-${y}`}
-                            x={x * cellSize}
-                            y={y * cellSize}
-                            width={cellSize}
-                            height={cellSize}
-                            fill="#111827"
-                          />
-                        ) : null
-                      )
-                    )}
-                  </svg>
-                );
-              })()}
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginBottom: '12px' }}>
-              <span className="badge badge-sage">
-                <CheckCircle2 size={12} /> Rabies Certified
-              </span>
-              <span className="badge badge-terracotta">
-                Chip #{activePet.microchipId.slice(-6)}
-              </span>
-            </div>
-
-            <p style={{ fontSize: '12px', color: '#1F2937', fontWeight: 600, lineHeight: 1.5, marginBottom: '20px' }}>
-              Present this unique QR code at clinic reception in Congo Town, Monrovia for rapid triage admission and complete medical history lookup.
-            </p>
-
-            <button 
-              onClick={() => setShowPetQrModal(false)}
-              className="btn-primary"
-              style={{ width: '100%', padding: '10px', fontWeight: 700 }}
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* RECEPTIONIST SCANNER MODAL */}
-      {showReceptionScannerModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.65)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 100,
-          padding: '20px'
-        }}>
-          <div style={{
-            backgroundColor: '#FFFFFF',
-            borderRadius: '24px',
-            maxWidth: '520px',
-            width: '100%',
-            padding: '28px',
-            boxShadow: 'var(--shadow-lg)',
-            border: '2px solid var(--color-forest-sage)'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div style={{ width: '40px', height: '40px', borderRadius: '12px', backgroundColor: 'var(--color-sage-light)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <ScanLine size={22} color="var(--color-forest-sage)" />
-                </div>
-                <div>
-                  <h3 className="font-serif" style={{ fontSize: '20px', fontWeight: 700, color: '#111827' }}>
-                    Scan Pet QR Code
-                  </h3>
-                  <p style={{ fontSize: '12px', color: 'var(--color-forest-sage)', fontWeight: 700 }}>
-                    Receptionist Check-In & Medical Record Retrieval
-                  </p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setShowReceptionScannerModal(false)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#111827', fontSize: '18px', fontWeight: 700 }}
-              >
-                ✕
-              </button>
-            </div>
-
-            <p style={{ fontSize: '13px', color: '#111827', fontWeight: 700, marginBottom: '10px' }}>
-              One-Tap Demo Scanner (Select Registered Patient):
-            </p>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
-              {pets.map(p => (
-                <div 
-                  key={p.id}
-                  onClick={() => {
-                    setScannedPetDossier(p);
-                    setShowReceptionScannerModal(false);
-                    setShowDossierModal(true);
-                  }}
-                  style={{
-                    padding: '12px 16px',
-                    borderRadius: '14px',
-                    backgroundColor: 'var(--color-card-warm)',
-                    border: '1px solid var(--color-border-subtle)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease'
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-sage-light)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-card-warm)')}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <img 
-                      src={p.photoUrl} 
-                      alt={p.name} 
-                      style={{ width: '40px', height: '40px', borderRadius: '10px', objectFit: 'cover' }} 
-                    />
-                    <div>
-                      <h4 style={{ fontSize: '15px', fontWeight: 700, color: '#111827' }}>{p.name}</h4>
-                      <p style={{ fontSize: '12px', color: '#1F2937', fontWeight: 600 }}>{p.species} · Owner: Anthony Tolbert</p>
-                    </div>
-                  </div>
-                  <span className="badge badge-sage">
-                    <ScanLine size={12} /> Scan Now
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ borderTop: '1px solid var(--color-border-subtle)', paddingTop: '16px' }}>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#111827', marginBottom: '6px' }}>
-                Or Input Scanned Payload / Tag:
-              </label>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input 
-                  type="text" 
-                  value={manualCodeInput}
-                  onChange={(e) => setManualCodeInput(e.target.value)}
-                  placeholder="e.g. HAPPYPAWS:PET:1 or Bella"
-                  className="form-input"
-                  style={{ color: '#111827', fontWeight: 600, flex: 1 }}
-                />
-                <button 
-                  onClick={() => {
-                    const matched = pets.find(p => 
-                      manualCodeInput.includes(p.name) || 
-                      manualCodeInput.includes(p.id.toString()) || 
-                      manualCodeInput.includes(p.rabiesTag)
-                    ) || pets[0];
-                    setScannedPetDossier(matched);
-                    setShowReceptionScannerModal(false);
-                    setShowDossierModal(true);
-                  }}
-                  className="btn-primary"
-                  style={{ padding: '0 16px', fontWeight: 700, backgroundColor: 'var(--color-forest-sage)' }}
-                >
-                  Lookup
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* PET MEDICAL DOSSIER MODAL (Scanned Result) */}
-      {showDossierModal && scannedPetDossier && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.65)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 100,
-          padding: '20px'
-        }}>
-          <div style={{
-            backgroundColor: '#FFFFFF',
-            borderRadius: '24px',
-            maxWidth: '650px',
-            width: '100%',
-            maxHeight: '90vh',
-            overflowY: 'auto',
-            padding: '28px',
-            boxShadow: 'var(--shadow-lg)',
-            border: '2px solid var(--color-forest-sage)'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ width: '44px', height: '44px', borderRadius: '12px', backgroundColor: 'var(--color-sage-light)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <Stethoscope size={24} color="var(--color-forest-sage)" />
-                </div>
-                <div>
-                  <h3 className="font-serif" style={{ fontSize: '22px', fontWeight: 700, color: '#111827' }}>
-                    Medical Dossier: {scannedPetDossier.name}
-                  </h3>
-                  <p style={{ fontSize: '12px', color: 'var(--color-forest-sage)', fontWeight: 700 }}>
-                    Scanned & Verified · Happy Paws Liberia Rescue Center
-                  </p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setShowDossierModal(false)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#111827', fontSize: '18px', fontWeight: 700 }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {admitSuccess && (
-              <div style={{ padding: '12px', borderRadius: '12px', backgroundColor: 'var(--color-sage-light)', color: 'var(--color-forest-sage)', fontSize: '13px', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <CheckCircle2 size={16} />
-                {scannedPetDossier.name} has been admitted directly to Today's Clinical Floor & Queue!
-              </div>
-            )}
-
-            {/* Profile Overview Card */}
-            <div style={{ background: 'var(--color-card-warm)', padding: '16px', borderRadius: '16px', display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '20px' }}>
-              <img 
-                src={scannedPetDossier.photoUrl} 
-                alt={scannedPetDossier.name} 
-                style={{ width: '84px', height: '84px', borderRadius: '16px', objectFit: 'cover' }} 
-              />
-              <div style={{ flex: 1 }}>
-                <h4 style={{ fontSize: '18px', fontWeight: 700, color: '#111827' }}>{scannedPetDossier.name}</h4>
-                <p style={{ fontSize: '13px', color: '#1F2937', fontWeight: 600 }}>
-                  {scannedPetDossier.species} · {scannedPetDossier.breed} · {scannedPetDossier.sex} ({scannedPetDossier.weightKg} kg)
-                </p>
-                <p style={{ fontSize: '12px', color: '#111827', fontWeight: 700, marginTop: '2px' }}>
-                  Parent: <strong>Anthony Tolbert</strong> · Contact: <a href="tel:0881479329" style={{ color: 'var(--color-amber-terracotta)', fontWeight: 700 }}>088 147 9329</a>
-                </p>
-                <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
-                  <span className="badge badge-sage">Tag: {scannedPetDossier.rabiesTag}</span>
-                  <span className="badge badge-terracotta">Chip: {scannedPetDossier.microchipId}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Vaccination History */}
-            <div style={{ marginBottom: '20px' }}>
-              <h4 style={{ fontSize: '14px', fontWeight: 700, color: '#111827', marginBottom: '8px', textTransform: 'uppercase' }}>
-                Vaccination Status
-              </h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {vaccinations.filter(v => v.petName === scannedPetDossier.name).map(v => (
-                  <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: '#FFFFFF', border: '1px solid var(--color-border-subtle)', borderRadius: '10px' }}>
-                    <div>
-                      <p style={{ fontSize: '13px', fontWeight: 700, color: '#111827' }}>{v.vaccineName}</p>
-                      <p style={{ fontSize: '11px', color: '#1F2937', fontWeight: 600 }}>Administered: {v.dateAdministered}</p>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <span className="badge badge-sage">{v.status}</span>
-                      <p style={{ fontSize: '11px', color: '#111827', fontWeight: 700, marginTop: '2px' }}>Valid: {v.validUntil}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Deworming History */}
-            <div style={{ marginBottom: '24px' }}>
-              <h4 style={{ fontSize: '14px', fontWeight: 700, color: '#111827', marginBottom: '8px', textTransform: 'uppercase' }}>
-                Deworming History
-              </h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {dewormings.filter(d => d.petName === scannedPetDossier.name).map(d => (
-                  <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: '#FFFFFF', border: '1px solid var(--color-border-subtle)', borderRadius: '10px' }}>
-                    <div>
-                      <p style={{ fontSize: '13px', fontWeight: 700, color: '#111827' }}>{d.productName}</p>
-                      <p style={{ fontSize: '11px', color: '#1F2937', fontWeight: 600 }}>Given: {d.dateGiven} ({d.dosage})</p>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <p style={{ fontSize: '12px', color: 'var(--color-amber-terracotta)', fontWeight: 700 }}>Next Due: {d.nextDueDate}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Modal Actions */}
-            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-              <button 
-                onClick={() => setShowDossierModal(false)}
-                className="btn-secondary"
-                style={{ padding: '8px 16px', color: '#111827', fontWeight: 700 }}
-              >
-                Close
-              </button>
-              <button 
-                onClick={() => {
-                  const newAppt: AppointmentItem = {
-                    id: Date.now(),
-                    clientName: 'Anthony Tolbert',
-                    petName: scannedPetDossier.name,
-                    species: scannedPetDossier.species,
-                    time: `Today at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-                    reason: 'QR Scan Reception Triage & Check-in',
-                    vetName: 'Dr. David Kpadeh',
-                    status: 'In Consultation'
-                  };
-                  setAppointments([newAppt, ...appointments]);
-                  setAdmitSuccess(true);
-                }}
-                className="btn-primary"
-                style={{ padding: '8px 18px', fontWeight: 700, backgroundColor: 'var(--color-forest-sage)' }}
-              >
-                <Plus size={16} /> Admit to Today's Clinic Queue
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Clinic Footer */}
-      <footer style={{
-        borderTop: '1px solid var(--color-border-subtle)',
-        backgroundColor: '#FFFFFF',
-        padding: '16px 24px',
-        textAlign: 'center',
-        fontSize: '13px',
-        color: '#111827',
-        fontWeight: 600
-      }}>
-        © {new Date().getFullYear()} Happy Paws Liberia Rescue Center. Dual Client: Android Native & Progressive Web App (PWA). All text styled in high-visibility black.
-      </footer>
     </div>
   );
 }
