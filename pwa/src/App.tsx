@@ -30,7 +30,8 @@ import {
   AlertCircle,
   FileText,
   Upload,
-  UserPlus
+  UserPlus,
+  Lock
 } from 'lucide-react';
 import { generateQrMatrix } from './qr';
 import type { UserRole, ClinicSettings } from './types';
@@ -89,7 +90,8 @@ import {
   updateInventoryStockInFirestore,
   saveInventoryItemToFirestore,
   deleteInventoryItemFromFirestore,
-  saveClinicSettingsToFirestore
+  saveClinicSettingsToFirestore,
+  logAuditEvent
 } from './dataService';
 
 export default function App() {
@@ -1677,25 +1679,62 @@ export default function App() {
                     type="number"
                     step="0.5"
                     value={tempRateInput}
+                    disabled={!(currentRole === 'super_admin' || currentRole === 'clinic_owner')}
+                    readOnly={!(currentRole === 'super_admin' || currentRole === 'clinic_owner')}
                     onChange={(e) => setTempRateInput(e.target.value)}
-                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', color: '#111827', fontWeight: 700, backgroundColor: '#FFFFFF', boxSizing: 'border-box' }}
+                    style={{
+                      width: '100%',
+                      padding: '9px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid #D1D5DB',
+                      fontSize: '14px',
+                      color: '#111827',
+                      fontWeight: 700,
+                      backgroundColor: (currentRole === 'super_admin' || currentRole === 'clinic_owner') ? '#FFFFFF' : '#F3F4F6',
+                      cursor: (currentRole === 'super_admin' || currentRole === 'clinic_owner') ? 'text' : 'not-allowed',
+                      boxSizing: 'border-box'
+                    }}
                   />
                 </div>
 
                 <div style={{ alignSelf: 'flex-end' }}>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const newRate = parseFloat(tempRateInput) || 194.0;
-                      await saveClinicSettingsToFirestore({ usdToLrdRate: newRate });
-                      setUsdToLrdRate(newRate);
-                      setToastNotification(`Exchange rate updated to 1 USD = ${newRate} LRD.`);
-                    }}
-                    className="btn-primary"
-                    style={{ padding: '9px 18px', fontWeight: 700, fontSize: '13px' }}
-                  >
-                    Update Exchange Rate
-                  </button>
+                  {(currentRole === 'super_admin' || currentRole === 'clinic_owner') ? (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const newRate = parseFloat(tempRateInput) || 194.0;
+                        const prevRate = usdToLrdRate;
+                        await saveClinicSettingsToFirestore({ usdToLrdRate: newRate });
+                        await logAuditEvent(
+                          'EXCHANGE_RATE_CHANGED',
+                          'Financial',
+                          `Exchange rate updated from 1 USD = ${prevRate} LRD to 1 USD = ${newRate} LRD by ${authenticatedUser.fullName} (${currentRole})`,
+                          authenticatedUser.email
+                        );
+                        setUsdToLrdRate(newRate);
+                        setToastNotification(`Exchange rate updated to 1 USD = ${newRate} LRD.`);
+                      }}
+                      className="btn-primary"
+                      style={{ padding: '9px 18px', fontWeight: 700, fontSize: '13px' }}
+                    >
+                      Update Exchange Rate
+                    </button>
+                  ) : (
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '9px 14px',
+                      backgroundColor: '#F3F4F6',
+                      borderRadius: '8px',
+                      border: '1px solid #E5E7EB',
+                      fontSize: '12px',
+                      color: '#6B7280',
+                      fontWeight: 600
+                    }}>
+                      <Lock size={14} /> Only Super Admin & Clinic Owner can edit exchange rate
+                    </div>
+                  )}
                 </div>
 
                 <p style={{ fontSize: '12px', color: '#6B7280', margin: 0, width: '100%' }}>
